@@ -5,9 +5,7 @@ use crate::ahp::*;
 use crate::{BTreeMap, String, ToString};
 use algebra::{Field, PrimeField};
 use derivative::Derivative;
-use algebra_utils::{
-    EvaluationDomain, Evaluations as EvaluationsOnDomain
-};
+use algebra_utils::{EvaluationDomain, Evaluations as EvaluationsOnDomain, get_best_evaluation_domain};
 use poly_commit::LabeledPolynomial;
 use r1cs_core::{ConstraintSystem, Index as VarIndex, LinearCombination, SynthesisError, Variable};
 
@@ -50,6 +48,45 @@ fn balance_matrices<F: Field>(a_matrix: &mut Matrix<F>, b_matrix: &mut Matrix<F>
             b_density = b_density - b_row_size + a_row_size;
             max_density = std::cmp::max(a_density, b_density);
             a_is_denser = a_density == max_density;
+        }
+    }
+}
+
+pub(crate) fn make_matrices_square<F: Field, CS: ConstraintSystem<F>>(
+    cs: &mut CS,
+    num_formatted_variables: usize,
+) {
+    let num_constraints = cs.num_constraints();
+    let matrix_padding = ((num_formatted_variables as isize) - (num_constraints as isize)).abs();
+
+    if num_formatted_variables > num_constraints {
+        use std::convert::identity as iden;
+        // Add dummy constraints of the form 0 * 0 == 0
+        for i in 0..matrix_padding {
+            cs.enforce(|| format!("pad constraint {}", i), iden, iden, iden);
+        }
+    } else {
+        // Add dummy unconstrained variables
+        for i in 0..matrix_padding {
+            let _ = cs
+                .alloc(|| format!("pad var {}", i), || Ok(F::one()))
+                .expect("alloc failed");
+        }
+    }
+}
+
+pub(crate) fn pad_input<F: PrimeField, CS: ConstraintSystem<F>>(
+    cs: &mut CS,
+    formatted_input_size: usize
+) {
+    let domain_x = get_best_evaluation_domain::<F>(formatted_input_size);
+    assert!(domain_x.is_some());
+
+    let padded_size = domain_x.unwrap().size();
+
+    if padded_size > formatted_input_size {
+        for i in 0..(padded_size - formatted_input_size) {
+            cs.alloc_input(|| format!("padding input {}", i), || Ok(F::zero())).unwrap();
         }
     }
 }
@@ -218,29 +255,6 @@ impl<ConstraintF: Field> ConstraintSystem<ConstraintF> for IndexerConstraintSyst
 /// This must *always* be in sync with `make_matrices_square`.
 pub(crate) fn padded_matrix_dim(num_formatted_variables: usize, num_constraints: usize) -> usize {
     std::cmp::max(num_formatted_variables, num_constraints)
-}
-
-pub(crate) fn make_matrices_square<F: Field, CS: ConstraintSystem<F>>(
-    cs: &mut CS,
-    num_formatted_variables: usize,
-) {
-    let num_constraints = cs.num_constraints();
-    let matrix_padding = ((num_formatted_variables as isize) - (num_constraints as isize)).abs();
-
-    if num_formatted_variables > num_constraints {
-        use std::convert::identity as iden;
-        // Add dummy constraints of the form 0 * 0 == 0
-        for i in 0..matrix_padding {
-            cs.enforce(|| format!("pad constraint {}", i), iden, iden, iden);
-        }
-    } else {
-        // Add dummy unconstrained variables
-        for i in 0..matrix_padding {
-            let _ = cs
-                .alloc(|| format!("pad var {}", i), || Ok(F::one()))
-                .expect("alloc failed");
-        }
-    }
 }
 
 #[derive(Derivative)]

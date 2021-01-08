@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::ahp::constraint_systems::ProverConstraintSystem;
+use crate::ahp::constraint_systems::{ProverConstraintSystem, pad_input};
 use crate::ahp::indexer::*;
 use crate::ahp::verifier::*;
 use crate::ahp::*;
@@ -137,6 +137,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         end_timer!(constraint_time);
 
         let padding_time = start_timer!(|| "Padding matrices to make them square");
+        let num_inputs = pcs.num_input_variables;
+        pad_input(&mut pcs, num_inputs);
         pcs.make_matrices_square();
         end_timer!(padding_time);
 

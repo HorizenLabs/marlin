@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use crate::ahp::{
-    constraint_systems::{arithmetize_matrix, IndexerConstraintSystem, MatrixArithmetization},
+    constraint_systems::{arithmetize_matrix, IndexerConstraintSystem, MatrixArithmetization, pad_input},
     AHPForR1CS, Error,
 };
 use crate::Vec;
@@ -115,6 +115,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         end_timer!(constraint_time);
 
         let padding_time = start_timer!(|| "Padding matrices to make them square");
+        let num_inputs = ics.num_input_variables;
+        pad_input(&mut ics, num_inputs);
         ics.make_matrices_square();
         end_timer!(padding_time);
         let matrix_processing_time = start_timer!(|| "Processing matrices");

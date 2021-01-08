@@ -26,6 +26,17 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
                 Ok(a)
             },
         )?;
+        let d = cs.alloc_input(
+            || "d",
+            || {
+                let mut a = self.a.ok_or(SynthesisError::AssignmentMissing)?;
+                let b = self.b.ok_or(SynthesisError::AssignmentMissing)?;
+
+                a.mul_assign(&b);
+                a.mul_assign(&b);
+                Ok(a)
+            },
+        )?;
 
         for i in 0..(self.num_variables - 3) {
             let _ = cs.alloc(
@@ -34,7 +45,7 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
             )?;
         }
 
-        for i in 0..self.num_constraints {
+        for i in 0..(self.num_constraints - 1){
             cs.enforce(
                 || format!("constraint {}", i),
                 |lc| lc + a,
@@ -42,6 +53,12 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
                 |lc| lc + c,
             );
         }
+        cs.enforce(
+            || format!("constraint {}", self.num_constraints - 1),
+            |lc| lc + c,
+            |lc| lc + b,
+            |lc| lc + d,
+        );
         Ok(())
     }
 }
@@ -70,6 +87,8 @@ mod marlin {
             let b = Fr::rand(rng);
             let mut c = a;
             c.mul_assign(&b);
+            let mut d = c;
+            d.mul_assign(&b);
 
             let circ = Circuit {
                 a: Some(a),
@@ -84,10 +103,10 @@ mod marlin {
             let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
             println!("Called prover");
 
-            assert!(MarlinInst::verify(&index_vk, &[c], &proof, rng).unwrap());
+            assert!(MarlinInst::verify(&index_vk, &[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!MarlinInst::verify(&index_vk, &[a], &proof, rng).unwrap());
+            assert!(!MarlinInst::verify(&index_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 

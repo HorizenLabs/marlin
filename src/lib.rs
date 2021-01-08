@@ -49,6 +49,7 @@ pub use data_structures::*;
 pub mod ahp;
 pub use ahp::AHPForR1CS;
 use ahp::EvaluationsProvider;
+use algebra_utils::get_best_evaluation_domain;
 
 #[cfg(test)]
 mod test;
@@ -308,6 +309,18 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
         rng: &mut R,
     ) -> Result<bool, Error<PC::Error>> {
         let verifier_time = start_timer!(|| "Marlin::Verify");
+
+        let public_input = {
+            let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
+
+            let mut unpadded_input = public_input.to_vec();
+            unpadded_input.resize(
+                std::cmp::max(public_input.len(), domain_x.size() - 1),
+                F::zero(),
+            );
+
+            unpadded_input
+        };
 
         let mut fs_rng = FiatShamirRng::<D>::from_seed(
             &to_bytes![&Self::PROTOCOL_NAME, &index_vk, &public_input].unwrap(),
