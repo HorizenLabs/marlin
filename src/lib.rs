@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 //! A crate for the Marlin preprocessing zkSNARK for R1CS.
 //!
 //! # Note
@@ -18,42 +17,22 @@
 #[macro_use]
 extern crate bench_utils;
 
-use algebra_core::to_bytes;
-use algebra_core::PrimeField;
-use algebra_core::ToBytes;
-use algebra_core::UniformRand;
-use core::marker::PhantomData;
+use algebra::to_bytes;
+use algebra::PrimeField;
+use algebra::ToBytes;
+use algebra::UniformRand;
+use std::marker::PhantomData;
 use digest::Digest;
 use poly_commit::Evaluations;
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
 
-#[cfg(not(feature = "std"))]
-#[macro_use]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{
-    borrow::Cow,
-    collections::BTreeMap,
-    string::{String, ToString},
-    vec::Vec,
-};
-
-#[cfg(feature = "std")]
 use std::{
-    borrow::Cow,
     collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
 };
-
-#[cfg(not(feature = "std"))]
-macro_rules! eprintln {
-    () => {};
-    ($($arg: tt)*) => {};
-}
 
 /// Implements a Fiat-Shamir based Rng that allows one to incrementally update
 /// the seed based on new messages in the proof transcript.
@@ -112,7 +91,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
     pub fn index<C: ConstraintSynthesizer<F>>(
         srs: &UniversalSRS<F, PC>,
         c: C,
-    ) -> Result<(IndexProverKey<F, PC, C>, IndexVerifierKey<F, PC, C>), Error<PC::Error>> {
+    ) -> Result<(IndexProverKey<F, PC>, IndexVerifierKey<F, PC>), Error<PC::Error>> {
         let index_time = start_timer!(|| "Marlin::Index");
 
         // TODO: Add check that c is in the correct mode.
@@ -121,9 +100,15 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
             Err(Error::IndexTooLarge)?;
         }
 
-        let coeff_support = AHPForR1CS::get_degree_bounds::<C>(&index.index_info);
+        let coeff_support = AHPForR1CS::get_degree_bounds(&index.index_info);
+        // Marlin only needs degree 2 random polynomials
+        let supported_hiding_bound = 1;
         let (committer_key, verifier_key) =
-            PC::trim(srs, index.max_degree(), Some(&coeff_support)).map_err(Error::from_pc_err)?;
+            PC::trim(srs,
+                     index.max_degree(),
+                     supported_hiding_bound,
+                     Some(&coeff_support)
+            ).map_err(Error::from_pc_err)?;
 
         let commit_time = start_timer!(|| "Commit to index polynomials");
         let (index_comms, index_comm_rands): (_, _) =
@@ -154,10 +139,10 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
 
     /// Create a zkSNARK asserting that the constraint system is satisfied.
     pub fn prove<C: ConstraintSynthesizer<F>, R: RngCore>(
-        index_pk: &IndexProverKey<F, PC, C>,
+        index_pk: &IndexProverKey<F, PC>,
         c: C,
         zk_rng: &mut R,
-    ) -> Result<Proof<F, PC, C>, Error<PC::Error>> {
+    ) -> Result<Proof<F, PC>, Error<PC::Error>> {
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
 
@@ -276,16 +261,18 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
 
         let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
         let mut evaluations = Vec::new();
-        for (label, point) in &query_set {
+        for (label, (_, point)) in &query_set {
             let lc = lc_s
                 .iter()
                 .find(|lc| &lc.label == label)
                 .ok_or(ahp::Error::MissingEval(label.to_string()))?;
             let eval = polynomials.get_lc_eval(&lc, *point)?;
             if !AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                evaluations.push(eval);
+                evaluations.push((label.to_string(), eval));
             }
         }
+        evaluations.sort_by(|a, b| a.0.cmp(&b.0));
+        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<F>>();
         end_timer!(eval_time);
 
         fs_rng.absorb(&evaluations);
@@ -314,10 +301,10 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
 
     /// Verify that a proof for the constrain system defined by `C` asserts that
     /// all constraints are satisfied.
-    pub fn verify<C: ConstraintSynthesizer<F>, R: RngCore>(
-        index_vk: &IndexVerifierKey<F, PC, C>,
+    pub fn verify<R: RngCore>(
+        index_vk: &IndexVerifierKey<F, PC>,
         public_input: &[F],
-        proof: &Proof<F, PC, C>,
+        proof: &Proof<F, PC>,
         rng: &mut R,
     ) -> Result<bool, Error<PC::Error>> {
         let verifier_time = start_timer!(|| "Marlin::Verify");
@@ -382,13 +369,18 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
         let opening_challenge: F = u128::rand(&mut fs_rng).into();
 
         let mut evaluations = Evaluations::new();
-        let mut proof_evals = proof.evaluations.iter();
-        for q in query_set.iter().cloned() {
-            if AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&q.0.as_ref()) {
-                evaluations.insert(q, F::zero());
+        let mut evaluation_labels = Vec::new();
+        for (poly_label, (_, point)) in query_set.iter().cloned() {
+            if AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
+                evaluations.insert((poly_label, point), F::zero());
             } else {
-                evaluations.insert(q, proof_evals.next().unwrap().clone());
+                evaluation_labels.push((poly_label, point));
             }
+        }
+
+        evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
+        for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
+            evaluations.insert(q, *eval);
         }
 
         let lc_s = AHPForR1CS::construct_linear_combinations(

@@ -5,20 +5,20 @@ use crate::ahp::{
     AHPForR1CS, Error,
 };
 use crate::Vec;
-use algebra_core::PrimeField;
+use algebra::PrimeField;
 use derivative::Derivative;
-use ff_fft::{EvaluationDomain, GeneralEvaluationDomain};
+use algebra_utils::get_best_evaluation_domain;
 use poly_commit::LabeledPolynomial;
 use r1cs_core::{ConstraintSynthesizer, SynthesisError};
 
-use core::marker::PhantomData;
+use std::marker::PhantomData;
 
 /// Information about the index, including the field of definition, the number of
 /// variables, the number of constraints, and the maximum number of non-zero
 /// entries in any of the constraint matrices.
 #[derive(Derivative)]
 #[derivative(Clone(bound = ""), Copy(bound = ""))]
-pub struct IndexInfo<F, C> {
+pub struct IndexInfo<F> {
     /// The total number of variables in the constraint system.
     pub num_variables: usize,
     /// The number of constraints.
@@ -28,19 +28,17 @@ pub struct IndexInfo<F, C> {
 
     #[doc(hidden)]
     f: PhantomData<F>,
-    #[doc(hidden)]
-    cs: PhantomData<fn() -> C>,
 }
 
-impl<F: PrimeField, C: ConstraintSynthesizer<F>> algebra_core::ToBytes for IndexInfo<F, C> {
-    fn write<W: algebra_core::io::Write>(&self, mut w: W) -> algebra_core::io::Result<()> {
+impl<F: PrimeField> algebra::ToBytes for IndexInfo<F> {
+    fn write<W: std::io::Write>(&self, mut w: W) -> std::io::Result<()> {
         (self.num_variables as u64).write(&mut w)?;
         (self.num_constraints as u64).write(&mut w)?;
         (self.num_non_zero as u64).write(&mut w)
     }
 }
 
-impl<F: PrimeField, C> IndexInfo<F, C> {
+impl<F: PrimeField> IndexInfo<F> {
     /// The maximum degree of polynomial required to represent this index in the
     /// the AHP.
     pub fn max_degree(&self) -> usize {
@@ -61,9 +59,9 @@ pub type Matrix<F> = Vec<Vec<(F, usize)>>;
 /// 2) `{a,b,c}` are the matrices defining the R1CS instance
 /// 3) `{a,b,c}_star_arith` are structs containing information about A^*, B^*, and C^*,
 /// which are matrices defined as `M^*(i, j) = M(j, i) * u_H(j, j)`.
-pub struct Index<'a, F: PrimeField, C> {
+pub struct Index<F: PrimeField> {
     /// Information about the index.
-    pub index_info: IndexInfo<F, C>,
+    pub index_info: IndexInfo<F>,
 
     /// The A matrix for the R1CS instance
     pub a: Matrix<F>,
@@ -73,21 +71,21 @@ pub struct Index<'a, F: PrimeField, C> {
     pub c: Matrix<F>,
 
     /// Arithmetization of the A* matrix.
-    pub a_star_arith: MatrixArithmetization<'a, F>,
+    pub a_star_arith: MatrixArithmetization<F>,
     /// Arithmetization of the B* matrix.
-    pub b_star_arith: MatrixArithmetization<'a, F>,
+    pub b_star_arith: MatrixArithmetization<F>,
     /// Arithmetization of the C* matrix.
-    pub c_star_arith: MatrixArithmetization<'a, F>,
+    pub c_star_arith: MatrixArithmetization<F>,
 }
 
-impl<'a, F: PrimeField, C: ConstraintSynthesizer<F>> Index<'a, F, C> {
+impl<F: PrimeField> Index<F> {
     /// The maximum degree required to represent polynomials of this index.
     pub fn max_degree(&self) -> usize {
         self.index_info.max_degree()
     }
 
     /// Iterate over the indexed polynomials.
-    pub fn iter(&self) -> impl Iterator<Item = &LabeledPolynomial<'a, F>> {
+    pub fn iter(&self) -> impl Iterator<Item = &LabeledPolynomial<F>> {
         vec![
             &self.a_star_arith.row,
             &self.a_star_arith.col,
@@ -108,7 +106,7 @@ impl<'a, F: PrimeField, C: ConstraintSynthesizer<F>> Index<'a, F, C> {
 
 impl<F: PrimeField> AHPForR1CS<F> {
     /// Generate the index for this constraint system.
-    pub fn index<'a, C: ConstraintSynthesizer<F>>(c: C) -> Result<Index<'a, F, C>, Error> {
+    pub fn index<C: ConstraintSynthesizer<F>>(c: C) -> Result<Index<F>, Error> {
         let index_time = start_timer!(|| "AHP::Index");
 
         let constraint_time = start_timer!(|| "Generating constraints");
@@ -150,30 +148,29 @@ impl<F: PrimeField> AHPForR1CS<F> {
             num_non_zero,
 
             f: PhantomData,
-            cs: PhantomData,
         };
 
-        let domain_h = GeneralEvaluationDomain::new(num_constraints)
+        let domain_h = get_best_evaluation_domain::<F>(num_constraints)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-        let domain_k = GeneralEvaluationDomain::new(num_non_zero)
+        let domain_k = get_best_evaluation_domain::<F>(num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-        let x_domain = GeneralEvaluationDomain::<F>::new(num_formatted_input_variables)
+        let x_domain = get_best_evaluation_domain(num_formatted_input_variables)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-        let b_domain = GeneralEvaluationDomain::<F>::new(3 * domain_k.size() - 3)
+        let b_domain = get_best_evaluation_domain(3 * domain_k.size() - 3)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
         let (mut a, mut b, mut c) = ics.constraint_matrices().expect("should not be `None`");
 
         let a_arithmetization_time = start_timer!(|| "Arithmetizing A");
-        let a_star_arith = arithmetize_matrix("a", &mut a, domain_k, domain_h, x_domain, b_domain);
+        let a_star_arith = arithmetize_matrix("a", &mut a, &domain_k, &domain_h, &x_domain, &b_domain);
         end_timer!(a_arithmetization_time);
 
         let b_arithmetization_time = start_timer!(|| "Arithmetizing B");
-        let b_star_arith = arithmetize_matrix("b", &mut b, domain_k, domain_h, x_domain, b_domain);
+        let b_star_arith = arithmetize_matrix("b", &mut b, &domain_k, &domain_h, &x_domain, &b_domain);
         end_timer!(b_arithmetization_time);
 
         let c_arithmetization_time = start_timer!(|| "Arithmetizing C");
-        let c_star_arith = arithmetize_matrix("c", &mut c, domain_k, domain_h, x_domain, b_domain);
+        let c_star_arith = arithmetize_matrix("c", &mut c, &domain_k, &domain_h, &x_domain, &b_domain);
         end_timer!(c_arithmetization_time);
 
         end_timer!(index_time);

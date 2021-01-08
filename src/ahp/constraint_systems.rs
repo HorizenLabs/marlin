@@ -2,11 +2,11 @@
 
 use crate::ahp::indexer::Matrix;
 use crate::ahp::*;
-use crate::{BTreeMap, Cow, String, ToString};
-use algebra_core::{Field, PrimeField};
+use crate::{BTreeMap, String, ToString};
+use algebra::{Field, PrimeField};
 use derivative::Derivative;
-use ff_fft::{
-    cfg_iter_mut, EvaluationDomain, Evaluations as EvaluationsOnDomain, GeneralEvaluationDomain,
+use algebra_utils::{
+    EvaluationDomain, Evaluations as EvaluationsOnDomain
 };
 use poly_commit::LabeledPolynomial;
 use r1cs_core::{ConstraintSystem, Index as VarIndex, LinearCombination, SynthesisError, Variable};
@@ -39,16 +39,16 @@ fn to_matrix_helper<F: Field>(
 fn balance_matrices<F: Field>(a_matrix: &mut Matrix<F>, b_matrix: &mut Matrix<F>) {
     let mut a_density: usize = a_matrix.iter().map(|row| row.len()).sum();
     let mut b_density: usize = b_matrix.iter().map(|row| row.len()).sum();
-    let mut max_density = core::cmp::max(a_density, b_density);
+    let mut max_density = std::cmp::max(a_density, b_density);
     let mut a_is_denser = a_density == max_density;
     for (a_row, b_row) in a_matrix.iter_mut().zip(b_matrix) {
         if a_is_denser {
             let a_row_size = a_row.len();
             let b_row_size = b_row.len();
-            core::mem::swap(a_row, b_row);
+            std::mem::swap(a_row, b_row);
             a_density = a_density - a_row_size + b_row_size;
             b_density = b_density - b_row_size + a_row_size;
-            max_density = core::cmp::max(a_density, b_density);
+            max_density = std::cmp::max(a_density, b_density);
             a_is_denser = a_density == max_density;
         }
     }
@@ -217,7 +217,7 @@ impl<ConstraintF: Field> ConstraintSystem<ConstraintF> for IndexerConstraintSyst
 
 /// This must *always* be in sync with `make_matrices_square`.
 pub(crate) fn padded_matrix_dim(num_formatted_variables: usize, num_constraints: usize) -> usize {
-    core::cmp::max(num_formatted_variables, num_constraints)
+    std::cmp::max(num_formatted_variables, num_constraints)
 }
 
 pub(crate) fn make_matrices_square<F: Field, CS: ConstraintSystem<F>>(
@@ -228,7 +228,7 @@ pub(crate) fn make_matrices_square<F: Field, CS: ConstraintSystem<F>>(
     let matrix_padding = ((num_formatted_variables as isize) - (num_constraints as isize)).abs();
 
     if num_formatted_variables > num_constraints {
-        use core::convert::identity as iden;
+        use std::convert::identity as iden;
         // Add dummy constraints of the form 0 * 0 == 0
         for i in 0..matrix_padding {
             cs.enforce(|| format!("pad constraint {}", i), iden, iden, iden);
@@ -245,51 +245,51 @@ pub(crate) fn make_matrices_square<F: Field, CS: ConstraintSystem<F>>(
 
 #[derive(Derivative)]
 #[derivative(Clone(bound = "F: PrimeField"))]
-pub struct MatrixEvals<'a, F: PrimeField> {
+pub struct MatrixEvals<F: PrimeField> {
     /// Evaluations of the LDE of row.
-    pub row: Cow<'a, EvaluationsOnDomain<F>>,
+    pub row: EvaluationsOnDomain<F>,
     /// Evaluations of the LDE of col.
-    pub col: Cow<'a, EvaluationsOnDomain<F>>,
+    pub col: EvaluationsOnDomain<F>,
     /// Evaluations of the LDE of val.
-    pub val: Cow<'a, EvaluationsOnDomain<F>>,
+    pub val: EvaluationsOnDomain<F>,
 }
 
 /// Contains information about the arithmetization of the matrix M^*.
 /// Here `M^*(i, j) := M(j, i) * u_H(j, j)`. For more details, see [COS19].
 #[derive(Derivative)]
 #[derivative(Clone(bound = "F: PrimeField"))]
-pub struct MatrixArithmetization<'a, F: PrimeField> {
+pub struct MatrixArithmetization<F: PrimeField> {
     /// LDE of the row indices of M^*.
-    pub row: LabeledPolynomial<'a, F>,
+    pub row: LabeledPolynomial<F>,
     /// LDE of the column indices of M^*.
-    pub col: LabeledPolynomial<'a, F>,
+    pub col: LabeledPolynomial<F>,
     /// LDE of the non-zero entries of M^*.
-    pub val: LabeledPolynomial<'a, F>,
+    pub val: LabeledPolynomial<F>,
     /// LDE of the vector containing entry-wise products of `row` and `col`,
     /// where `row` and `col` are as above.
-    pub row_col: LabeledPolynomial<'a, F>,
+    pub row_col: LabeledPolynomial<F>,
 
     /// Evaluation of `self.row`, `self.col`, and `self.val` on the domain `K`.
-    pub evals_on_K: MatrixEvals<'a, F>,
+    pub evals_on_K: MatrixEvals<F>,
 
     /// Evaluation of `self.row`, `self.col`, and, `self.val` on
     /// an extended domain B (of size > `3K`).
     // TODO: rename B everywhere.
-    pub evals_on_B: MatrixEvals<'a, F>,
+    pub evals_on_B: MatrixEvals<F>,
 
     /// Evaluation of `self.row_col` on an extended domain B (of size > `3K`).
-    pub row_col_evals_on_B: Cow<'a, EvaluationsOnDomain<F>>,
+    pub row_col_evals_on_B: EvaluationsOnDomain<F>,
 }
 
 // TODO for debugging: add test that checks result of arithmetize_matrix(M).
-pub(crate) fn arithmetize_matrix<'a, F: PrimeField>(
+pub(crate) fn arithmetize_matrix<F: PrimeField>(
     matrix_name: &str,
     matrix: &mut Matrix<F>,
-    interpolation_domain: GeneralEvaluationDomain<F>,
-    output_domain: GeneralEvaluationDomain<F>,
-    input_domain: GeneralEvaluationDomain<F>,
-    expanded_domain: GeneralEvaluationDomain<F>,
-) -> MatrixArithmetization<'a, F> {
+    interpolation_domain: &Box<dyn EvaluationDomain<F>>,
+    output_domain: &Box<dyn EvaluationDomain<F>>,
+    input_domain: &Box<dyn EvaluationDomain<F>>,
+    expanded_domain: &Box<dyn EvaluationDomain<F>>,
+) -> MatrixArithmetization<F> {
     let matrix_time = start_timer!(|| "Computing row, col, and val LDEs");
 
     let elems: Vec<_> = output_domain.elements().collect();
@@ -319,7 +319,7 @@ pub(crate) fn arithmetize_matrix<'a, F: PrimeField>(
 
         for &mut (val, i) in row {
             let row_val = elems[r];
-            let col_val = elems[output_domain.reindex_by_subdomain(input_domain, i)];
+            let col_val = elems[output_domain.reindex_by_subdomain(input_domain.size(), i)];
 
             // We are dealing with the transpose of M
             row_vec.push(col_val);
@@ -330,9 +330,9 @@ pub(crate) fn arithmetize_matrix<'a, F: PrimeField>(
             count += 1;
         }
     }
-    algebra_core::fields::batch_inversion::<F>(&mut inverses);
+    algebra::fields::batch_inversion::<F>(&mut inverses);
 
-    cfg_iter_mut!(val_vec)
+    val_vec.par_iter_mut()
         .zip(inverses)
         .for_each(|(v, inv)| *v *= &inv);
     end_timer!(lde_evals_time);
@@ -349,11 +349,11 @@ pub(crate) fn arithmetize_matrix<'a, F: PrimeField>(
         .collect();
 
     let interpolate_time = start_timer!(|| "Interpolating on K and B");
-    let row_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(row_vec, interpolation_domain);
-    let col_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(col_vec, interpolation_domain);
-    let val_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(val_vec, interpolation_domain);
+    let row_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(row_vec, interpolation_domain.clone());
+    let col_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(col_vec, interpolation_domain.clone());
+    let val_evals_on_K = EvaluationsOnDomain::from_vec_and_domain(val_vec, interpolation_domain.clone());
     let row_col_evals_on_K =
-        EvaluationsOnDomain::from_vec_and_domain(row_col_vec, interpolation_domain);
+        EvaluationsOnDomain::from_vec_and_domain(row_col_vec, interpolation_domain.clone());
 
     let row = row_evals_on_K.clone().interpolate();
     let col = col_evals_on_K.clone().interpolate();
@@ -361,36 +361,36 @@ pub(crate) fn arithmetize_matrix<'a, F: PrimeField>(
     let row_col = row_col_evals_on_K.interpolate();
 
     let row_evals_on_B =
-        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&row), expanded_domain);
+        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&row), expanded_domain.clone());
     let col_evals_on_B =
-        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&col), expanded_domain);
+        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&col), expanded_domain.clone());
     let val_evals_on_B =
-        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&val), expanded_domain);
+        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&val), expanded_domain.clone());
     let row_col_evals_on_B =
-        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&row_col), expanded_domain);
+        EvaluationsOnDomain::from_vec_and_domain(expanded_domain.fft(&row_col), expanded_domain.clone());
     end_timer!(interpolate_time);
 
     end_timer!(matrix_time);
     let evals_on_K = MatrixEvals {
-        row: Cow::Owned(row_evals_on_K),
-        col: Cow::Owned(col_evals_on_K),
-        val: Cow::Owned(val_evals_on_K),
+        row: row_evals_on_K,
+        col: col_evals_on_K,
+        val: val_evals_on_K,
     };
     let evals_on_B = MatrixEvals {
-        row: Cow::Owned(row_evals_on_B),
-        col: Cow::Owned(col_evals_on_B),
-        val: Cow::Owned(val_evals_on_B),
+        row: row_evals_on_B,
+        col: col_evals_on_B,
+        val: val_evals_on_B,
     };
 
     let m_name = matrix_name.to_string();
     MatrixArithmetization {
-        row: LabeledPolynomial::new_owned(m_name.clone() + "_row", row, None, None),
-        col: LabeledPolynomial::new_owned(m_name.clone() + "_col", col, None, None),
-        val: LabeledPolynomial::new_owned(m_name.clone() + "_val", val, None, None),
-        row_col: LabeledPolynomial::new_owned(m_name.clone() + "_row_col", row_col, None, None),
+        row: LabeledPolynomial::new(m_name.clone() + "_row", row, None, None),
+        col: LabeledPolynomial::new(m_name.clone() + "_col", col, None, None),
+        val: LabeledPolynomial::new(m_name.clone() + "_val", val, None, None),
+        row_col: LabeledPolynomial::new(m_name.clone() + "_row_col", row_col, None, None),
         evals_on_K,
         evals_on_B,
-        row_col_evals_on_B: Cow::Owned(row_col_evals_on_B),
+        row_col_evals_on_B,
     }
 }
 

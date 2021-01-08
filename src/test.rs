@@ -1,4 +1,4 @@
-use algebra_core::Field;
+use algebra::Field;
 use r1cs_core::{ConstraintSynthesizer, ConstraintSystem, SynthesisError};
 
 #[derive(Copy, Clone)]
@@ -51,16 +51,17 @@ mod marlin {
     use crate::Marlin;
 
     use algebra::UniformRand;
-    use algebra::{bls12_381::Fr, Bls12_381};
+    use algebra::{fields::tweedle::fr::Fr, curves::tweedle::dee::Affine};
     use blake2::Blake2s;
-    use core::ops::MulAssign;
-    use poly_commit::marlin_pc::MarlinKZG10;
+    use std::ops::MulAssign;
+    use poly_commit::ipa_pc::InnerProductArgPC;
+    use rand::thread_rng;
 
-    type MultiPC = MarlinKZG10<Bls12_381>;
+    type MultiPC = InnerProductArgPC<Affine, Blake2s>;
     type MarlinInst = Marlin<Fr, MultiPC, Blake2s>;
 
     fn test_circuit(num_constraints: usize, num_variables: usize) {
-        let rng = &mut algebra::test_rng();
+        let rng = &mut thread_rng();
 
         let universal_srs = MarlinInst::universal_setup(100, 25, 100, rng).unwrap();
 

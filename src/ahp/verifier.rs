@@ -2,23 +2,21 @@
 
 use crate::ahp::indexer::IndexInfo;
 use crate::ahp::*;
-use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
 
-use algebra_core::PrimeField;
-use ff_fft::{EvaluationDomain, GeneralEvaluationDomain};
+use algebra::PrimeField;
+use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, sample_element_outside_domain};
 use poly_commit::QuerySet;
 
 /// State of the AHP verifier
-pub struct VerifierState<F: PrimeField, C> {
-    pub(crate) domain_h: GeneralEvaluationDomain<F>,
-    pub(crate) domain_k: GeneralEvaluationDomain<F>,
+pub struct VerifierState<F: PrimeField> {
+    pub(crate) domain_h: Box<dyn EvaluationDomain<F>>,
+    pub(crate) domain_k: Box<dyn EvaluationDomain<F>>,
 
     pub(crate) first_round_msg: Option<VerifierFirstMsg<F>>,
     pub(crate) second_round_msg: Option<VerifierSecondMsg<F>>,
 
     pub(crate) gamma: Option<F>,
-    _cs: PhantomData<fn() -> C>,
 }
 
 /// First message of the verifier.
@@ -43,21 +41,21 @@ pub struct VerifierSecondMsg<F> {
 
 impl<F: PrimeField> AHPForR1CS<F> {
     /// Output the first message and next round state.
-    pub fn verifier_first_round<R: RngCore, C: ConstraintSynthesizer<F>>(
-        index_info: IndexInfo<F, C>,
+    pub fn verifier_first_round<R: RngCore>(
+        index_info: IndexInfo<F>,
         rng: &mut R,
-    ) -> Result<(VerifierFirstMsg<F>, VerifierState<F, C>), Error> {
+    ) -> Result<(VerifierFirstMsg<F>, VerifierState<F>), Error> {
         if index_info.num_constraints != index_info.num_variables {
             return Err(Error::NonSquareMatrix);
         }
 
-        let domain_h = GeneralEvaluationDomain::new(index_info.num_constraints)
+        let domain_h = get_best_evaluation_domain::<F>(index_info.num_constraints)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
-        let domain_k = GeneralEvaluationDomain::new(index_info.num_non_zero)
+        let domain_k = get_best_evaluation_domain::<F>(index_info.num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
-        let alpha = domain_h.sample_element_outside_domain(rng);
+        let alpha = sample_element_outside_domain(&domain_h, rng);
         let eta_a = F::rand(rng);
         let eta_b = F::rand(rng);
         let eta_c = F::rand(rng);
@@ -75,18 +73,17 @@ impl<F: PrimeField> AHPForR1CS<F> {
             first_round_msg: Some(msg),
             second_round_msg: None,
             gamma: None,
-            _cs: PhantomData,
         };
 
         Ok((msg, new_state))
     }
 
     /// Output the second message and next round state.
-    pub fn verifier_second_round<R: RngCore, C: ConstraintSynthesizer<F>>(
-        mut state: VerifierState<F, C>,
+    pub fn verifier_second_round<R: RngCore>(
+        mut state: VerifierState<F>,
         rng: &mut R,
-    ) -> (VerifierSecondMsg<F>, VerifierState<F, C>) {
-        let beta = state.domain_h.sample_element_outside_domain(rng);
+    ) -> (VerifierSecondMsg<F>, VerifierState<F>) {
+        let beta = sample_element_outside_domain(&state.domain_h, rng);
         let msg = VerifierSecondMsg { beta };
         state.second_round_msg = Some(msg);
 
@@ -94,19 +91,19 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Output the third message and next round state.
-    pub fn verifier_third_round<R: RngCore, C: ConstraintSynthesizer<F>>(
-        mut state: VerifierState<F, C>,
+    pub fn verifier_third_round<R: RngCore>(
+        mut state: VerifierState<F>,
         rng: &mut R,
-    ) -> VerifierState<F, C> {
+    ) -> VerifierState<F> {
         state.gamma = Some(F::rand(rng));
         state
     }
 
     /// Output the query state and next round state.
-    pub fn verifier_query_set<'a, 'b, R: RngCore, C: ConstraintSynthesizer<F>>(
-        state: VerifierState<F, C>,
+    pub fn verifier_query_set<'a, 'b, R: RngCore>(
+        state: VerifierState<F>,
         _: &'a mut R,
-    ) -> (QuerySet<'b, F>, VerifierState<F, C>) {
+    ) -> (QuerySet<'b, F>, VerifierState<F>) {
         let beta = state.second_round_msg.unwrap().beta;
 
         let gamma = state.gamma.unwrap();
@@ -139,10 +136,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         //  LinearCombination::new("z_b", vec![(F::one(), z_b)])
         //  LinearCombination::new("g_1", vec![(F::one(), g_1)], rhs::new(g_1_at_beta))
         //  LinearCombination::new("t", vec![(F::one(), t)])
-        query_set.insert(("g_1".into(), beta));
-        query_set.insert(("z_b".into(), beta));
-        query_set.insert(("t".into(), beta));
-        query_set.insert(("outer_sumcheck".into(), beta));
+        query_set.insert(("g_1".into(), ("beta".into(), beta)));
+        query_set.insert(("z_b".into(), ("beta".into(), beta)));
+        query_set.insert(("t".into(), ("beta".into(), beta)));
+        query_set.insert(("outer_sumcheck".into(), ("beta".into(), beta)));
 
         // For the second linear combination
         // Inner sumcheck test:
@@ -202,11 +199,11 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // // This LC is the only one that is evaluated:
         // let inner_sumcheck = a_poly_lc - (b_lc * (gamma * &g_2_at_gamma + &(t_at_beta / &k_size))) - h_lc
         // main_lc.set_label("inner_sumcheck");
-        query_set.insert(("g_2".into(), gamma));
-        query_set.insert(("a_denom".into(), gamma));
-        query_set.insert(("b_denom".into(), gamma));
-        query_set.insert(("c_denom".into(), gamma));
-        query_set.insert(("inner_sumcheck".into(), gamma));
+        query_set.insert(("g_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_denom".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_denom".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_denom".into(), ("gamma".into(), gamma)));
+        query_set.insert(("inner_sumcheck".into(), ("gamma".into(), gamma)));
 
         (query_set, state)
     }

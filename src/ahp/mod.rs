@@ -1,11 +1,10 @@
 use crate::{String, ToString, Vec};
-use algebra_core::{Field, PrimeField};
-use core::{borrow::Borrow, marker::PhantomData};
-use ff_fft::{cfg_iter_mut, EvaluationDomain, GeneralEvaluationDomain};
+use algebra::{Field, PrimeField};
+use std::{borrow::Borrow, marker::PhantomData};
+use algebra_utils::{EvaluationDomain, get_best_evaluation_domain};
 use poly_commit::{LCTerm, LabeledPolynomial, LinearCombination};
 use r1cs_core::SynthesisError;
 
-#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 pub(crate) mod constraint_systems;
@@ -76,10 +75,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let padded_matrix_dim =
             constraint_systems::padded_matrix_dim(num_variables, num_constraints);
         let zk_bound = 1;
-        let domain_h_size = GeneralEvaluationDomain::<F>::compute_size_of_domain(padded_matrix_dim)
-            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-        let domain_k_size = GeneralEvaluationDomain::<F>::compute_size_of_domain(num_non_zero)
-            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+        let domain_h_size = get_best_evaluation_domain::<F>(padded_matrix_dim)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
+        let domain_k_size = get_best_evaluation_domain::<F>(num_non_zero)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         Ok(*[
             2 * domain_h_size + zk_bound - 2,
             3 * domain_h_size + 2 * zk_bound - 3, //  mask_poly
@@ -93,12 +92,12 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Get all the strict degree bounds enforced in the AHP.
-    pub fn get_degree_bounds<C>(info: &indexer::IndexInfo<F, C>) -> [usize; 2] {
+    pub fn get_degree_bounds(info: &indexer::IndexInfo<F>) -> [usize; 2] {
         let mut degree_bounds = [0usize; 2];
         let num_constraints = info.num_constraints;
         let num_non_zero = info.num_non_zero;
-        let h_size = GeneralEvaluationDomain::<F>::compute_size_of_domain(num_constraints).unwrap();
-        let k_size = GeneralEvaluationDomain::<F>::compute_size_of_domain(num_non_zero).unwrap();
+        let h_size = get_best_evaluation_domain::<F>(num_constraints).unwrap().size();
+        let k_size = get_best_evaluation_domain::<F>(num_non_zero).unwrap().size();
 
         degree_bounds[0] = h_size - 2;
         degree_bounds[1] = k_size - 2;
@@ -107,17 +106,16 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
     /// Construct the linear combinations that are checked by the AHP.
     #[allow(non_snake_case)]
-    pub fn construct_linear_combinations<C, E>(
+    pub fn construct_linear_combinations<E>(
         public_input: &[F],
         evals: &E,
-        state: &verifier::VerifierState<F, C>,
+        state: &verifier::VerifierState<F>,
     ) -> Result<Vec<LinearCombination<F>>, Error>
     where
-        C: r1cs_core::ConstraintSynthesizer<F>,
         E: EvaluationsProvider<F>,
     {
-        let domain_h = state.domain_h;
-        let domain_k = state.domain_k;
+        let domain_h = &state.domain_h;
+        let domain_k = &state.domain_k;
         let k_size = domain_k.size_as_field_element();
 
         let public_input =
@@ -125,7 +123,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         if !Self::formatted_public_input_is_admissible(&public_input) {
             Err(Error::InvalidPublicInputLength)?
         }
-        let x_domain = GeneralEvaluationDomain::new(public_input.len())
+        let x_domain = get_best_evaluation_domain::<F>(public_input.len())
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
         let first_round_msg = state.first_round_msg.unwrap();
@@ -273,7 +271,7 @@ impl<'a, F: Field> EvaluationsProvider<F> for poly_commit::Evaluations<'a, F> {
     }
 }
 
-impl<'a, F: Field, T: Borrow<LabeledPolynomial<'a, F>>> EvaluationsProvider<F> for Vec<T> {
+impl<'a, F: Field, T: Borrow<LabeledPolynomial<F>>> EvaluationsProvider<F> for Vec<T> {
     fn get_lc_eval(&self, lc: &LinearCombination<F>, point: F) -> Result<F, Error> {
         let mut eval = F::zero();
         for (coeff, term) in lc.iter() {
@@ -321,7 +319,7 @@ impl From<SynthesisError> for Error {
 }
 
 /// The derivative of the vanishing polynomial
-pub trait UnnormalizedBivariateLagrangePoly<F: algebra_core::FftField> {
+pub trait UnnormalizedBivariateLagrangePoly<F: PrimeField> {
     /// Evaluate the polynomial
     fn eval_unnormalized_bivariate_lagrange_poly(&self, x: F, y: F) -> F;
 
@@ -332,7 +330,7 @@ pub trait UnnormalizedBivariateLagrangePoly<F: algebra_core::FftField> {
     fn batch_eval_unnormalized_bivariate_lagrange_poly_with_same_inputs(&self) -> Vec<F>;
 }
 
-impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for GeneralEvaluationDomain<F> {
+impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for Box<dyn EvaluationDomain<F>> {
     fn eval_unnormalized_bivariate_lagrange_poly(&self, x: F, y: F) -> F {
         if x != y {
             (self.evaluate_vanishing_polynomial(x) - self.evaluate_vanishing_polynomial(y))
@@ -345,9 +343,9 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for GeneralEvaluationDo
     fn batch_eval_unnormalized_bivariate_lagrange_poly_with_diff_inputs(&self, x: F) -> Vec<F> {
         let vanish_x = self.evaluate_vanishing_polynomial(x);
         let mut inverses: Vec<F> = self.elements().map(|y| x - y).collect();
-        algebra_core::fields::batch_inversion(&mut inverses);
+        algebra::fields::batch_inversion(&mut inverses);
 
-        cfg_iter_mut!(inverses).for_each(|denominator| *denominator *= vanish_x);
+        inverses.par_iter_mut().for_each(|denominator| *denominator *= vanish_x);
         inverses
     }
 
@@ -364,14 +362,15 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for GeneralEvaluationDo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use algebra::bls12_381::fr::Fr;
-    use algebra::{One, UniformRand, Zero};
-    use ff_fft::{DenseOrSparsePolynomial, DensePolynomial};
+    use algebra::fields::bn_382::fr::Fr;
+    use algebra::UniformRand;
+    use algebra_utils::{DenseOrSparsePolynomial, DensePolynomial, get_best_evaluation_domain};
+    use rand::thread_rng;
 
     #[test]
     fn domain_unnormalized_bivariate_lagrange_poly() {
         for domain_size in 1..10 {
-            let domain = GeneralEvaluationDomain::<Fr>::new(1 << domain_size).unwrap();
+            let domain = get_best_evaluation_domain::<Fr>(1 << domain_size).unwrap();
             let manual: Vec<_> = domain
                 .elements()
                 .map(|elem| domain.eval_unnormalized_bivariate_lagrange_poly(elem, elem))
@@ -383,9 +382,9 @@ mod tests {
 
     #[test]
     fn domain_unnormalized_bivariate_lagrange_poly_diff_inputs() {
-        let rng = &mut algebra::test_rng();
+        let rng = &mut thread_rng();
         for domain_size in 1..10 {
-            let domain = GeneralEvaluationDomain::<Fr>::new(1 << domain_size).unwrap();
+            let domain = get_best_evaluation_domain::<Fr>(1 << domain_size).unwrap();
             let x = Fr::rand(rng);
             let manual: Vec<_> = domain
                 .elements()
@@ -398,9 +397,9 @@ mod tests {
 
     #[test]
     fn test_summation() {
-        let rng = &mut algebra::test_rng();
+        let rng = &mut thread_rng();
         let size = 1 << 4;
-        let domain = GeneralEvaluationDomain::<Fr>::new(1 << 4).unwrap();
+        let domain = get_best_evaluation_domain::<Fr>(1 << 4).unwrap();
         let size_as_fe = domain.size_as_field_element();
         let poly = DensePolynomial::rand(size, rng);
 
@@ -419,9 +418,9 @@ mod tests {
 
     #[test]
     fn test_alternator_polynomial() {
-        use ff_fft::Evaluations;
-        let domain_k = GeneralEvaluationDomain::<Fr>::new(1 << 4).unwrap();
-        let domain_h = GeneralEvaluationDomain::<Fr>::new(1 << 3).unwrap();
+        use algebra_utils::Evaluations;
+        let domain_k = get_best_evaluation_domain::<Fr>(1 << 4).unwrap();
+        let domain_h = get_best_evaluation_domain::<Fr>(1 << 3).unwrap();
         let domain_h_elems = domain_h
             .elements()
             .collect::<std::collections::HashSet<_>>();
