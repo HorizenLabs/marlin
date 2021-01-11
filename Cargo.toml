@@ -21,6 +21,7 @@ edition = "2018"
 [dependencies]
 algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
 algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
+primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bn_382", "tweedle"]}

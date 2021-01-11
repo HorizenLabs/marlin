@@ -39,6 +39,9 @@ use std::{
 pub mod rng;
 use rng::FiatShamirRng;
 
+/// Implements fiat shamir.
+pub mod fiat_shamir;
+
 mod error;
 pub use error::*;
 
