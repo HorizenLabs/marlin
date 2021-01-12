@@ -55,6 +55,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
 }
 
 /// Each prover message that is not a list of oracles is a list of field elements.
+#[derive(Clone)]
 pub enum ProverMsg<F: Field> {
     /// Some rounds, the prover sends only oracles. (This is actually the case for all
     /// rounds in Marlin.)

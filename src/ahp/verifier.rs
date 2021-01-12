@@ -2,11 +2,12 @@
 
 use crate::ahp::indexer::IndexInfo;
 use crate::ahp::*;
-use rand_core::RngCore;
 
 use algebra::PrimeField;
-use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, sample_element_outside_domain};
-use poly_commit::QuerySet;
+use algebra_utils::{EvaluationDomain, get_best_evaluation_domain};
+use poly_commit::{
+    QuerySet, fiat_shamir::FiatShamirRng,
+};
 
 /// State of the AHP verifier
 pub struct VerifierState<F: PrimeField> {
@@ -41,9 +42,12 @@ pub struct VerifierSecondMsg<F> {
 
 impl<F: PrimeField> AHPForR1CS<F> {
     /// Output the first message and next round state.
-    pub fn verifier_first_round<R: RngCore>(
+    pub fn verifier_first_round<
+        ConstraintF: PrimeField,
+        FS: FiatShamirRng<F, ConstraintF>
+    >(
         index_info: IndexInfo<F>,
-        rng: &mut R,
+        rng: &mut FS,
     ) -> Result<(VerifierFirstMsg<F>, VerifierState<F>), Error> {
         if index_info.num_constraints != index_info.num_variables {
             return Err(Error::NonSquareMatrix);
@@ -55,10 +59,12 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let domain_k = get_best_evaluation_domain::<F>(index_info.num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
-        let alpha = sample_element_outside_domain(&domain_h, rng);
-        let eta_a = F::rand(rng);
-        let eta_b = F::rand(rng);
-        let eta_c = F::rand(rng);
+        let elems = rng.squeeze_nonnative_field_elements(4);
+        let alpha = elems[0];
+        let eta_a = elems[1];
+        let eta_b = elems[2];
+        let eta_c = elems[3];
+        assert!(!domain_h.evaluate_vanishing_polynomial(alpha).is_zero());
 
         let msg = VerifierFirstMsg {
             alpha,
@@ -79,11 +85,15 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Output the second message and next round state.
-    pub fn verifier_second_round<R: RngCore>(
+    pub fn verifier_second_round<
+        ConstraintF: PrimeField,
+        FS: FiatShamirRng<F, ConstraintF>
+    >(
         mut state: VerifierState<F>,
-        rng: &mut R,
+        rng: &mut FS,
     ) -> (VerifierSecondMsg<F>, VerifierState<F>) {
-        let beta = sample_element_outside_domain(&state.domain_h, rng);
+        let beta = rng.squeeze_nonnative_field_elements(1)[0];
+        assert!(!state.domain_h.evaluate_vanishing_polynomial(beta).is_zero());
         let msg = VerifierSecondMsg { beta };
         state.second_round_msg = Some(msg);
 
@@ -91,21 +101,26 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Output the third message and next round state.
-    pub fn verifier_third_round<R: RngCore>(
+    pub fn verifier_third_round<
+        ConstraintF: PrimeField,
+        FS: FiatShamirRng<F, ConstraintF>
+    >(
         mut state: VerifierState<F>,
-        rng: &mut R,
+        rng: &mut FS,
     ) -> VerifierState<F> {
-        state.gamma = Some(F::rand(rng));
+        state.gamma = Some(rng.squeeze_nonnative_field_elements(1)[0]);
         state
     }
 
     /// Output the query state and next round state.
-    pub fn verifier_query_set<'a, 'b, R: RngCore>(
+    pub fn verifier_query_set<'a, 'b, ConstraintF: PrimeField, FS: FiatShamirRng<F, ConstraintF>>(
         state: VerifierState<F>,
-        _: &'a mut R,
+        _: &'a mut FS,
+        with_vanishing: bool,
     ) -> (QuerySet<'b, F>, VerifierState<F>) {
-        let beta = state.second_round_msg.unwrap().beta;
 
+        let alpha = state.first_round_msg.unwrap().alpha;
+        let beta = state.second_round_msg.unwrap().beta;
         let gamma = state.gamma.unwrap();
 
         let mut query_set = QuerySet::new();
@@ -204,6 +219,12 @@ impl<F: PrimeField> AHPForR1CS<F> {
         query_set.insert(("b_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("c_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("inner_sumcheck".into(), ("gamma".into(), gamma)));
+
+        if with_vanishing {
+            query_set.insert(("vanishing_poly_h_alpha".into(), ("alpha".into(), alpha)));
+            query_set.insert(("vanishing_poly_h_beta".into(), ("beta".into(), beta)));
+            query_set.insert(("vanishing_poly_k_gamma".into(), ("gamma".into(), gamma)));
+        }
 
         (query_set, state)
     }

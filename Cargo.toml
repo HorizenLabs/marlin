@@ -21,16 +21,15 @@ edition = "2018"
 [dependencies]
 algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
 algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
-primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
+primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bn_382"]}
 bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bn_382", "tweedle"]}
 
-poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "dev" }
+poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "prep" }
 
 rand = "0.7"
 rand_core = { version = "0.5" }
-rand_chacha = { version = "0.2.1", default-features = false }
 rayon = { version = "1" }
 digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }

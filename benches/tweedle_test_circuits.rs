@@ -18,6 +18,8 @@ use r1cs_std::eq::EqGadget;
 use r1cs_std::fields::FieldGadget;
 use r1cs_std::alloc::AllocGadget;
 
+use primitives::crh::poseidon::BN382FrPoseidonHash;
+
 use rand::{
     rngs::OsRng, thread_rng
 };
@@ -31,7 +33,7 @@ extern crate criterion;
 extern crate bench_utils;
 
 type IPAPC = InnerProductArgPC<Affine, Blake2s>;
-type MarlinInst = Marlin<Fr, IPAPC, Blake2s>;
+type MarlinInst = Marlin<Fr, IPAPC, BN382FrPoseidonHash>;
 
 #[derive(Clone)]
 pub struct TestCircuit1a<F: PrimeField> {

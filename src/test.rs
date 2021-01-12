@@ -65,26 +65,33 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
 
 mod marlin {
     use super::*;
-    use crate::Marlin;
+    use crate::{
+        Marlin, MarlinRecursiveConfig,
+    };
 
     use algebra::UniformRand;
-    use algebra::{fields::tweedle::fr::Fr, curves::tweedle::dee::Affine};
+    use algebra::{
+        fields::bn_382::{
+            fq::Fq, fr::Fr,
+        }, curves::bn_382::g::Affine
+    };
+    use primitives::crh::poseidon::parameters::BN382FrPoseidonHash;
+    use poly_commit::ipa_pc::InnerProductArgPC;
     use blake2::Blake2s;
     use std::ops::MulAssign;
-    use poly_commit::ipa_pc::InnerProductArgPC;
     use rand::thread_rng;
 
-    type MultiPC = InnerProductArgPC<Affine, Blake2s>;
-    type MarlinInst = Marlin<Fr, MultiPC, Blake2s>;
+    type MultiPC = InnerProductArgPC<Affine, BN382FrPoseidonHash>;
+    type MarlinInst = Marlin<Fq, Fr, MultiPC, BN382FrPoseidonHash, MarlinRecursiveConfig>;
 
     fn test_circuit(num_constraints: usize, num_variables: usize) {
         let rng = &mut thread_rng();
 
-        let universal_srs = MarlinInst::universal_setup(100, 25, 100, rng).unwrap();
+        let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
 
         for _ in 0..100 {
-            let a = Fr::rand(rng);
-            let b = Fr::rand(rng);
+            let a = Fq::rand(rng);
+            let b = Fq::rand(rng);
             let mut c = a;
             c.mul_assign(&b);
             let mut d = c;
