@@ -66,7 +66,9 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
 mod marlin {
     use super::*;
     use crate::{
-        Marlin, MarlinRecursiveConfig,
+        Marlin,
+        MarlinRecursiveConfig,
+        MarlinDefaultConfig,
     };
 
     use algebra::UniformRand;
@@ -82,14 +84,15 @@ mod marlin {
     use rand::thread_rng;
 
     type MultiPC = InnerProductArgPC<Affine, BN382FrPoseidonHash>;
-    type MarlinInst = Marlin<Fq, Fr, MultiPC, BN382FrPoseidonHash, MarlinRecursiveConfig>;
+    type MarlinInstDefault = Marlin<Fq, Fr, MultiPC, BN382FrPoseidonHash, MarlinDefaultConfig>;
+    type MarlinInstRecursive = Marlin<Fq, Fr, MultiPC, BN382FrPoseidonHash, MarlinRecursiveConfig>;
 
     fn test_circuit(num_constraints: usize, num_variables: usize) {
         let rng = &mut thread_rng();
 
-        let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
+        let universal_srs = MarlinInstDefault::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
 
-        for _ in 0..100 {
+        for _ in 0..50 {
             let a = Fq::rand(rng);
             let b = Fq::rand(rng);
             let mut c = a;
@@ -104,16 +107,45 @@ mod marlin {
                 num_variables,
             };
 
-            let (index_pk, index_vk) = MarlinInst::index(&universal_srs, circ.clone()).unwrap();
+            let (index_pk, index_vk) = MarlinInstDefault::index(&universal_srs, circ.clone()).unwrap();
             println!("Called index");
 
-            let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
+            let proof = MarlinInstDefault::prove(&index_pk, circ, rng).unwrap();
             println!("Called prover");
 
-            assert!(MarlinInst::verify(&index_vk, &[c, d], &proof, rng).unwrap());
+            assert!(MarlinInstDefault::verify(&index_vk, &[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!MarlinInst::verify(&index_vk, &[a, a], &proof, rng).unwrap());
+            assert!(!MarlinInstDefault::verify(&index_vk, &[a, a], &proof, rng).unwrap());
+        }
+
+        let universal_srs = MarlinInstRecursive::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
+
+        for _ in 0..50 {
+            let a = Fq::rand(rng);
+            let b = Fq::rand(rng);
+            let mut c = a;
+            c.mul_assign(&b);
+            let mut d = c;
+            d.mul_assign(&b);
+
+            let circ = Circuit {
+                a: Some(a),
+                b: Some(b),
+                num_constraints,
+                num_variables,
+            };
+
+            let (index_pk, index_vk) = MarlinInstRecursive::index(&universal_srs, circ.clone()).unwrap();
+            println!("Called index");
+
+            let proof = MarlinInstRecursive::prove(&index_pk, circ, rng).unwrap();
+            println!("Called prover");
+
+            assert!(MarlinInstRecursive::verify(&index_vk, &[c, d], &proof, rng).unwrap());
+            println!("Called verifier");
+            println!("\nShould not verify (i.e. verifier messages should print below):");
+            assert!(!MarlinInstRecursive::verify(&index_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 

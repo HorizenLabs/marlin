@@ -2,6 +2,7 @@ target
 Cargo.lock
 .DS_Store
 .idea
+.vscode
 *.iml
 *.ipynb_checkpoints
 *.pyc
