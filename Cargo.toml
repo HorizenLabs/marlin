@@ -19,11 +19,11 @@ license = "MIT/Apache-2.0"
 edition = "2018"
 
 [dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
-algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["parallel"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = [ "parallel", "fft"] }
 bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
-r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bn_382", "tweedle"]}
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 
 poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "dev" }
 
@@ -35,6 +35,9 @@ digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }
 
 [dev-dependencies]
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bls12_381", "jubjub", "bn_382", "tweedle"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = [ "bn_382", "tweedle" ] }
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl", features = ["bn_382", "tweedle"]}
 blake2 = { version = "0.8", default-features = false }
 criterion = "0.3"
 rand_xorshift = "0.2"
@@ -77,12 +80,12 @@ opt-level = 3
 rpath = false
 lto = "thin"
 incremental = true
-debug-assertions = false
-debug = false
+debug-assertions = true
+debug = true
 
 [profile.test]
 opt-level = 3
 lto = "thin"
 incremental = true
-debug-assertions = false
-debug = false
+debug-assertions = true
+debug = true
