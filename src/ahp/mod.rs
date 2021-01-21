@@ -36,11 +36,11 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
     /// The labels for the polynomials output by the AHP prover.
     #[rustfmt::skip]
-    pub const PROVER_POLYNOMIALS: [&'static str; 9] = [
+    pub const PROVER_POLYNOMIALS: [&'static str; 8] = [
         // First sumcheck
-        "w", "z_a", "z_b", "mask_poly", "t", "g_1", "h_1",
+        "w", "z_a", "z_b", "t", "z_1", "h_1",
         // Second sumcheck
-        "g_2", "h_2",
+        "z_2", "h_2",
     ];
 
     /// THe linear combinations that are statically known to evaluate to zero.
@@ -74,14 +74,12 @@ impl<F: PrimeField> AHPForR1CS<F> {
     ) -> Result<usize, Error> {
         let padded_matrix_dim =
             constraint_systems::padded_matrix_dim(num_variables, num_constraints);
-        let zk_bound = 1;
         let domain_h_size = get_best_evaluation_domain::<F>(padded_matrix_dim)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         let domain_k_size = get_best_evaluation_domain::<F>(num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         Ok(*[
-            2 * domain_h_size + zk_bound - 2,
-            3 * domain_h_size + 2 * zk_bound - 3, //  mask_poly
+            2 * domain_h_size - 2,
             domain_h_size,
             domain_h_size,
             3 * domain_k_size - 3,
@@ -92,17 +90,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Get all the strict degree bounds enforced in the AHP.
-    pub fn get_degree_bounds(info: &indexer::IndexInfo<F>) -> [usize; 2] {
-        let mut degree_bounds = [0usize; 2];
-        let num_constraints = info.num_constraints;
-        let num_non_zero = info.num_non_zero;
-        let h_size = get_best_evaluation_domain::<F>(num_constraints).unwrap().size();
-        let k_size = get_best_evaluation_domain::<F>(num_non_zero).unwrap().size();
-
-        degree_bounds[0] = h_size - 2;
-        degree_bounds[1] = k_size - 2;
-        degree_bounds
-    }
+    pub fn get_degree_bounds(_info: &indexer::IndexInfo<F>) -> [usize; 2] { [0usize; 2] }
 
     /// Construct the linear combinations that are checked by the AHP.
     #[allow(non_snake_case)]
@@ -115,7 +103,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         E: EvaluationsProvider<F>,
     {
         let domain_h = &state.domain_h;
+        let g_h = domain_h.group_gen();
+
         let domain_k = &state.domain_k;
+        let g_k = domain_k.group_gen();
         let k_size = domain_k.size_as_field_element();
 
         let public_input =
@@ -139,7 +130,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         // Outer sumcheck:
         let z_b = LinearCombination::new("z_b", vec![(F::one(), "z_b")]);
-        let g_1 = LinearCombination::new("g_1", vec![(F::one(), "g_1")]);
+        let z_1 = LinearCombination::new("z_1", vec![(F::one(), "z_1")]);
         let t = LinearCombination::new("t", vec![(F::one(), "t")]);
 
         let r_alpha_at_beta = domain_h.eval_unnormalized_bivariate_lagrange_poly(alpha, beta);
@@ -149,7 +140,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let z_b_at_beta = evals.get_lc_eval(&z_b, beta)?;
         let t_at_beta = evals.get_lc_eval(&t, beta)?;
-        let g_1_at_beta = evals.get_lc_eval(&g_1, beta)?;
+        let z_1_at_beta = evals.get_lc_eval(&z_1, beta)?;
+        let z_1_at_g_beta = evals.get_lc_eval(&z_1, g_h * beta)?;
 
         let x_at_beta = x_domain
             .evaluate_all_lagrange_coefficients(beta)
@@ -162,7 +154,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let outer_sumcheck = LinearCombination::new(
             "outer_sumcheck",
             vec![
-                (F::one(), "mask_poly".into()),
 
                 (r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta), "z_a".into()),
                 (r_alpha_at_beta * eta_b * z_b_at_beta, LCTerm::One),
@@ -171,19 +162,20 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 (-t_at_beta * x_at_beta, LCTerm::One),
 
                 (-v_H_at_beta, "h_1".into()),
-                (-beta * g_1_at_beta, LCTerm::One),
+                (z_1_at_beta, LCTerm::One),
+                (-z_1_at_g_beta, LCTerm::One),
             ],
         );
         debug_assert!(evals.get_lc_eval(&outer_sumcheck, beta)?.is_zero());
 
         linear_combinations.push(z_b);
-        linear_combinations.push(g_1);
+        linear_combinations.push(z_1);
         linear_combinations.push(t);
         linear_combinations.push(outer_sumcheck);
 
         //  Inner sumcheck:
         let beta_alpha = beta * alpha;
-        let g_2 = LinearCombination::new("g_2", vec![(F::one(), "g_2")]);
+        let z_2 = LinearCombination::new("z_2", vec![(F::one(), "z_2")]);
 
         let a_denom = LinearCombination::new(
             "a_denom",
@@ -218,7 +210,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let a_denom_at_gamma = evals.get_lc_eval(&a_denom, gamma)?;
         let b_denom_at_gamma = evals.get_lc_eval(&b_denom, gamma)?;
         let c_denom_at_gamma = evals.get_lc_eval(&c_denom, gamma)?;
-        let g_2_at_gamma = evals.get_lc_eval(&g_2, gamma)?;
+        let z_2_at_gamma = evals.get_lc_eval(&z_2, gamma)?;
+        let z_2_at_g_gamma = evals.get_lc_eval(&z_2, g_k * gamma)?;
 
         let v_K_at_gamma = domain_k.evaluate_vanishing_polynomial(gamma);
 
@@ -233,7 +226,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         a *= v_H_at_alpha * v_H_at_beta;
         let b_at_gamma = a_denom_at_gamma * b_denom_at_gamma * c_denom_at_gamma;
-        let b_expr_at_gamma = b_at_gamma * (gamma * g_2_at_gamma + &(t_at_beta / &k_size));
+        let b_expr_at_gamma = b_at_gamma * (z_2_at_g_gamma - z_2_at_gamma + &(t_at_beta / &k_size));
 
         a -= &LinearCombination::new("b_expr", vec![(b_expr_at_gamma, LCTerm::One)]);
         a -= &LinearCombination::new("h_2", vec![(v_K_at_gamma, "h_2")]);
@@ -242,7 +235,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let inner_sumcheck = a;
         debug_assert!(evals.get_lc_eval(&inner_sumcheck, gamma)?.is_zero());
 
-        linear_combinations.push(g_2);
+        linear_combinations.push(z_2);
         linear_combinations.push(a_denom);
         linear_combinations.push(b_denom);
         linear_combinations.push(c_denom);
@@ -418,6 +411,7 @@ pub(crate) fn compute_coboundary_polynomial<F: PrimeField>(poly_evals: Evaluatio
     // ....
     // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
     // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
+    //TODO: Prefix sum here. Parallelize ? Is it worth it ? (rayon (crossbeam too) has no parallel impl for scan())
     let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
         *acc += x;
         Some(*acc)
@@ -442,7 +436,7 @@ pub(crate) fn compute_coboundary_polynomial<F: PrimeField>(poly_evals: Evaluatio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use algebra::fields::bn_382::fr::Fr;
+    use algebra::fields::tweedle::fr::Fr;
     use algebra::UniformRand;
     use algebra_utils::{DenseOrSparsePolynomial, DensePolynomial, get_best_evaluation_domain};
     use rand::thread_rng;
@@ -571,7 +565,7 @@ mod tests {
     fn test_coboundary_polynomial() {
         let rng = &mut thread_rng();
 
-        for domain_size in 1..10 {
+        for domain_size in 1..20 {
             let domain = get_best_evaluation_domain::<Fr>(1 << domain_size).unwrap();
             let size = domain.size();
 

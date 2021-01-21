@@ -105,8 +105,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         _: &'a mut R,
     ) -> (QuerySet<'b, F>, VerifierState<F>) {
         let beta = state.second_round_msg.unwrap().beta;
-
         let gamma = state.gamma.unwrap();
+
+        let g_h = state.domain_h.group_gen();
+        let g_k = state.domain_k.group_gen();
 
         let mut query_set = QuerySet::new();
         // For the first linear combination
@@ -136,7 +138,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         //  LinearCombination::new("z_b", vec![(F::one(), z_b)])
         //  LinearCombination::new("g_1", vec![(F::one(), g_1)], rhs::new(g_1_at_beta))
         //  LinearCombination::new("t", vec![(F::one(), t)])
-        query_set.insert(("g_1".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("g * beta".into(), g_h * beta)));
         query_set.insert(("z_b".into(), ("beta".into(), beta)));
         query_set.insert(("t".into(), ("beta".into(), beta)));
         query_set.insert(("outer_sumcheck".into(), ("beta".into(), beta)));
@@ -199,7 +202,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // // This LC is the only one that is evaluated:
         // let inner_sumcheck = a_poly_lc - (b_lc * (gamma * &g_2_at_gamma + &(t_at_beta / &k_size))) - h_lc
         // main_lc.set_label("inner_sumcheck");
-        query_set.insert(("g_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("z_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("z_2".into(), ("g * gamma".into(), g_k * gamma)));
         query_set.insert(("a_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("b_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("c_denom".into(), ("gamma".into(), gamma)));
