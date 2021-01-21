@@ -359,72 +359,85 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for Box<dyn EvaluationD
     }
 }
 
-    // TODO: Is it necessary to return the coefficients of p' too ?
-    // TODO: Find a better name for this function
+// TODO: Is it necessary to return the coefficients of p' too ?
+// TODO: Find a better name for this function
 
-    /// Given a polynomial `p` and a `domain`, output: p'(x) = p(x) - v/|`domain`|,
-    /// the evalutions of p' over all the elements of the domain, and v itself.
-    pub(crate) fn normalize_poly_by_domain_evals<F: PrimeField>(
-        p: DensePolynomial<F>,
-        domain: Box<dyn EvaluationDomain<F>>
-    ) -> (DensePolynomial<F>, Evaluations<F>, F)
-    {
-        // Compute v = sum(P(x)) for each x in domain
-        let p_evals = p.evaluate_over_domain_by_ref(domain.clone()).evals;
-        let v = p_evals.iter().sum::<F>();
-        let v_over_domain = v * domain.size_inv();
+/// Given a polynomial `p` and a `domain`, output:
+/// 1) p'(x) = p(x) - v/|`domain`|;
+/// 2) the evalutions of p' over all the elements of the domain;
+/// 3) v itself.
+/// If p_evals_over_domain is set to None, the evaluations of `p`
+/// over all the `domain` points will be computed.
+pub(crate) fn normalize_poly_by_domain_evals<F: PrimeField>(
+    p: DensePolynomial<F>,
+    p_evals_over_domain: Option<Vec<F>>,
+    domain: Box<dyn EvaluationDomain<F>>
+) -> (DensePolynomial<F>, Evaluations<F>, F)
+{
+    // Compute v = sum(P(x)) for each x in domain
+    let p_evals = if p_evals_over_domain.is_some() {
+        p_evals_over_domain.unwrap()
+    } else {
+        p.evaluate_over_domain_by_ref(domain.clone()).evals
+    };
 
-        // Compute P'(X) = P(X) - v/|domain|
-        let mut p_coeffs = p.coeffs;
-        p_coeffs[0] -= v_over_domain;
-        let p_prime = DensePolynomial::from_coefficients_vec(p_coeffs);
+    let v = p_evals.iter().sum::<F>();
+    let v_over_domain = v * domain.size_inv();
 
-        // Evaluate P'(X) for each x in domain (it's enough to take the evaluations of P and
-        // subtract v/|domain|).
-        let p_prime_evals = Evaluations::from_vec_and_domain(
-            p_evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),
-            domain
-        );
+    // Compute P'(X) = P(X) - v/|domain|
+    let mut p_coeffs = p.coeffs;
+    p_coeffs[0] -= v_over_domain;
+    let p_prime = DensePolynomial::from_coefficients_vec(p_coeffs);
 
-        (p_prime, p_prime_evals, v)
-    }
+    // Evaluate P'(X) for each x in domain (it's enough to take the evaluations of P and
+    // subtract v/|domain|).
+    let p_prime_evals = Evaluations::from_vec_and_domain(
+        p_evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),
+        domain
+    );
 
-    /// Given the evaluations of a "normalized" polynomial P' over all the elements of `domain`
-    /// e.g. P'(X) = P(X) - sum(P_evals_over_domain)/|domain|, compute and output a coboundary
-    /// polynomial Z s.t. P'(x) = Z(g*x) - Z(x) for every x in `domain`, where g is `domain.group_gen()`
-    pub(crate) fn compute_coboundary_polynomial<F: PrimeField>(poly_evals: Evaluations<F>) -> DensePolynomial<F>
-    {
-        let domain = poly_evals.domain;
-        let evals = poly_evals.evals;
+    (p_prime, p_prime_evals, v)
+}
 
-        // Z(1) = 0, or any arbitrary value
-        let mut z_evals = Vec::with_capacity(evals.len());
-        z_evals.push(F::zero());
+/// Given the evaluations of a "normalized" polynomial P' over all the elements of `domain`
+/// e.g. P'(X) = P(X) - sum(P_evals_over_domain)/|domain|, compute and output a coboundary
+/// polynomial Z s.t. P'(x) = Z(g*x) - Z(x) for every x in `domain`, where g is `domain.group_gen()`.
+/// Return the z poly and its evaluations over `domain`.
+pub(crate) fn compute_coboundary_polynomial<F: PrimeField>(poly_evals: Evaluations<F>) -> (DensePolynomial<F>, Evaluations<F>)
+{
+    let domain = poly_evals.domain;
+    let evals = poly_evals.evals;
 
-        // The other coefficients of the potential polynomial will be the cumulative sum
-        // of the evaluations of the input poly over the domain, e.g.:
-        // Z(g) = Z(1) + p'(g),
-        // ....
-        // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
-        // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
-        let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
-            *acc += x;
-            Some(*acc)
-        }).collect::<Vec<_>>();
+    // Z(1) = 0, or any arbitrary value
+    let mut z_evals = Vec::with_capacity(evals.len());
+    z_evals.push(F::zero());
 
-        // Poly evals over domain should sum to zero
-        debug_assert!(poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] == F::zero());
+    // The other coefficients of the potential polynomial will be the cumulative sum
+    // of the evaluations of the input poly over the domain, e.g.:
+    // Z(g) = Z(1) + p'(g),
+    // ....
+    // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
+    // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
+    let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
+        *acc += x;
+        Some(*acc)
+    }).collect::<Vec<_>>();
 
-        z_evals.append(&mut poly_cum_sum_evals);
-        z_evals.pop(); // Pop the last zero
+    // Poly evals over domain should sum to zero
+    debug_assert!(poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] == F::zero());
 
-        let z_poly = Evaluations::from_vec_and_domain(
-            z_evals,
-            domain,
-        ).interpolate();
+    z_evals.append(&mut poly_cum_sum_evals);
+    z_evals.pop(); // Pop the last zero
 
-        z_poly
-    }
+    let z_evals = Evaluations::from_vec_and_domain(
+        z_evals,
+        domain,
+    );
+
+    let z_poly = z_evals.interpolate_by_ref();
+
+    (z_poly, z_evals)
+}
 
 #[cfg(test)]
 mod tests {
@@ -561,28 +574,25 @@ mod tests {
         for domain_size in 1..10 {
             let domain = get_best_evaluation_domain::<Fr>(1 << domain_size).unwrap();
             let size = domain.size();
-            let mut elements_iter = domain.elements();
 
             // Get random poly
             let p = DensePolynomial::<Fr>::rand(size, rng);
 
             // Compute the normalized poly and evaluations from it
-            let (_p_prime, p_prime_evals, _v) = normalize_poly_by_domain_evals::<Fr>(p, domain);
+            let (_p_prime, p_prime_evals, _v) = normalize_poly_by_domain_evals::<Fr>(p, None, domain);
 
             // Compute potential polynomial
-            let z = compute_coboundary_polynomial::<Fr>(
+            let (_z_poly, z_evals) = compute_coboundary_polynomial::<Fr>(
                 p_prime_evals.clone()
             );
 
             // Test that indeed Z is a potential polynomial, e.g. :
             // Z(g^i) - z(g^i-1) == p'(g^i) <=> Z(g*x) - Z(x) = p'(x) for each x in domain
-            let mut prev_g = elements_iter.next().unwrap();
-            for (i, curr_g) in elements_iter.enumerate() {
+            for i in 1..size {
                 assert_eq!(
-                    z.evaluate(curr_g) - z.evaluate(prev_g), p_prime_evals[i],
+                    z_evals[i] - z_evals[i - 1], p_prime_evals[i - 1],
                     "{}", format!("Equality {} failed on domain size 2^{}", i, size)
                 );
-                prev_g = curr_g;
             }
         }
     }
