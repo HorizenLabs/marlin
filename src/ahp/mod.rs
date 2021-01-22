@@ -78,15 +78,15 @@ impl<F: PrimeField> AHPForR1CS<F> {
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         let domain_k_size = get_best_evaluation_domain::<F>(num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
+        let zk_bound = 2; // Due to our way of "batching" polynomials we need an extra query.
         Ok(*[
-            2 * domain_h_size - 2,
-            domain_h_size,
-            domain_h_size,
-            3 * domain_k_size - 3,
+            2 * domain_h_size + 2 * zk_bound - 3, // h_1 max degree
+            domain_h_size - 1, // For exceptional case of high zk_bound
+            3 * domain_k_size - 4, // h_2 max degree
         ]
         .iter()
         .max()
-        .unwrap())
+        .unwrap()) // This is really the degree not the number of coefficients
     }
 
     /// Get all the strict degree bounds enforced in the AHP.
@@ -303,6 +303,8 @@ pub enum Error {
     NonSquareMatrix,
     /// An error occurred during constraint generation.
     ConstraintSystemError(SynthesisError),
+    /// The coboundary polynomial evaluations over the domain don't sum to zero.
+    InvalidBoundaryPolynomial,
 }
 
 impl From<SynthesisError> for Error {
@@ -352,85 +354,130 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for Box<dyn EvaluationD
     }
 }
 
-// TODO: Is it necessary to return the coefficients of p' too ?
-// TODO: Find a better name for this function
-
-/// Given a polynomial `p` and a `domain`, output:
-/// 1) p'(x) = p(x) - v/|`domain`|;
-/// 2) the evalutions of p' over all the elements of the domain;
-/// 3) v itself.
-/// If p_evals_over_domain is set to None, the evaluations of `p`
-/// over all the `domain` points will be computed.
-pub(crate) fn normalize_poly_by_domain_evals<F: PrimeField>(
-    p: DensePolynomial<F>,
-    p_evals_over_domain: Option<Vec<F>>,
-    domain: Box<dyn EvaluationDomain<F>>
-) -> (DensePolynomial<F>, Evaluations<F>, F)
-{
-    // Compute v = sum(P(x)) for each x in domain
-    let p_evals = if p_evals_over_domain.is_some() {
-        p_evals_over_domain.unwrap()
-    } else {
-        p.evaluate_over_domain_by_ref(domain.clone()).evals
-    };
-
-    let v = p_evals.iter().sum::<F>();
-    let v_over_domain = v * domain.size_inv();
-
-    // Compute P'(X) = P(X) - v/|domain|
-    let mut p_coeffs = p.coeffs;
-    p_coeffs[0] -= v_over_domain;
-    let p_prime = DensePolynomial::from_coefficients_vec(p_coeffs);
-
-    // Evaluate P'(X) for each x in domain (it's enough to take the evaluations of P and
-    // subtract v/|domain|).
-    let p_prime_evals = Evaluations::from_vec_and_domain(
-        p_evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),
-        domain
-    );
-
-    (p_prime, p_prime_evals, v)
+/// A coboundary polynomial over a domain D is a polynomial P
+/// s.t. sum_{x_in_D}(P(x)) = 0.
+/// Given a coboundary polynomial P over a domain D, a boundary
+/// polynomial is a polynomial Z s.t. P(x) = Z(g*x) - Z(x).
+pub struct BoundaryPolynomial<F: PrimeField> {
+    /// The boundary polynomial.
+    poly: DensePolynomial<F>,
+    /// Evaluations of the boundary polynomial over the D domain.
+    evals: Evaluations<F>,
 }
 
-/// Given the evaluations of a "normalized" polynomial P' over all the elements of `domain`
-/// e.g. P'(X) = P(X) - sum(P_evals_over_domain)/|domain|, compute and output a coboundary
-/// polynomial Z s.t. P'(x) = Z(g*x) - Z(x) for every x in `domain`, where g is `domain.group_gen()`.
-/// Return the z poly and its evaluations over `domain`.
-pub(crate) fn compute_coboundary_polynomial<F: PrimeField>(poly_evals: Evaluations<F>) -> (DensePolynomial<F>, Evaluations<F>)
-{
-    let domain = poly_evals.domain;
-    let evals = poly_evals.evals;
+impl<F: PrimeField> BoundaryPolynomial<F> {
 
-    // Z(1) = 0, or any arbitrary value
-    let mut z_evals = Vec::with_capacity(evals.len());
-    z_evals.push(F::zero());
+    /// Construct a `self` instance from a boundary polynomial.
+    pub fn new(
+        boundary_poly: DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<Self, Error>
+    {
+        let poly_evals = (&boundary_poly).evaluate_over_domain_by_ref(domain);
 
-    // The other coefficients of the potential polynomial will be the cumulative sum
-    // of the evaluations of the input poly over the domain, e.g.:
-    // Z(g) = Z(1) + p'(g),
-    // ....
-    // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
-    // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
-    //TODO: Prefix sum here. Parallelize ? Is it worth it ? (rayon (crossbeam too) has no parallel impl for scan())
-    let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
-        *acc += x;
-        Some(*acc)
-    }).collect::<Vec<_>>();
+        // Poly evals over domain should sum to zero
+        if poly_evals.evals.iter().sum::<F>() != F::zero() {
+            Err(Error::InvalidBoundaryPolynomial)?
+        }
 
-    // Poly evals over domain should sum to zero
-    debug_assert!(poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] == F::zero());
+        Ok( Self { poly: boundary_poly, evals: poly_evals } )
+    }
 
-    z_evals.append(&mut poly_cum_sum_evals);
-    z_evals.pop(); // Pop the last zero
+    /// Return the underlying boundary polynomial, consuming `self`.
+    pub fn polynomial(self) -> DensePolynomial<F> { self.poly }
 
-    let z_evals = Evaluations::from_vec_and_domain(
-        z_evals,
-        domain,
-    );
+    /// Borrow the underlying boundary polynomial.
+    pub fn polynomial_ref(&self) -> &DensePolynomial<F> { &self.poly }
 
-    let z_poly = z_evals.interpolate_by_ref();
+    /// Return the evaluations over D of the boundary polynomial, consuming `self`.
+    pub fn evals(self) -> Evaluations<F> { self.evals }
 
-    (z_poly, z_evals)
+    /// Return the evaluations over D of the boundary polynomial, borrowing `self`.
+    pub fn evals_ref(&self) -> &Evaluations<F> { &self.evals }
+
+    /// Compute the boundary polynomial given a coboundary polynomial
+    /// evaluations `poly_evals` over the elements of a domain D.
+    pub fn from_coboundary_polynomial_evals(
+        poly_evals: Evaluations<F>
+    ) -> Result<Self, Error>
+    {
+        let domain = poly_evals.domain;
+        let evals = poly_evals.evals;
+
+        // Z(1) = 0, or any arbitrary value
+        let mut z_evals = Vec::with_capacity(evals.len());
+        z_evals.push(F::zero());
+
+        // The other coefficients of the boundary polynomial will be the cumulative sum
+        // of the evaluations of the coboundary poly over the domain, e.g.:
+        // Z(g) = Z(1) + p'(g),
+        // ....
+        // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
+        // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
+        //TODO: Prefix sum here. Parallelize ? Is it worth it ? (rayon (crossbeam too) has no parallel impl for scan())
+        let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
+            *acc += x;
+            Some(*acc)
+        }).collect::<Vec<_>>();
+
+        // Poly evals over domain should sum to zero
+        if poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] != F::zero() {
+            Err(Error::InvalidBoundaryPolynomial)?
+        }
+
+        z_evals.append(&mut poly_cum_sum_evals);
+        z_evals.pop(); // Pop the last zero
+
+        let z_evals = Evaluations::from_vec_and_domain(
+            z_evals,
+            domain,
+        );
+
+        let z_poly = z_evals.interpolate_by_ref();
+
+        Ok(Self {
+            poly: z_poly,
+            evals: z_evals
+        })
+    }
+
+    /// Compute the boundary polynomial given a coboundary
+    /// polynomial `poly` over a domain `domain`.
+    pub fn from_coboundary_polynomial(
+        poly:   &DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<Self, Error>
+    {
+        Self::from_coboundary_polynomial_evals(poly.evaluate_over_domain_by_ref(domain))
+    }
+
+    /// Compute the boundary polynomial given a non-coboundary polynomial
+    /// evaluations `poly_evals` over the elements of a domain D.
+    /// To make the poly sum to 0 over D, its evaluations are shifted by
+    /// a factor v = sum(`poly_evals`)/|D|.
+    /// Return the boundary polynomial and v.
+    pub fn from_non_coboundary_polynomial_evals(
+        poly_evals: Evaluations<F>
+    ) -> Result<(Self, F), Error>
+    {
+        let v = poly_evals.evals.iter().sum::<F>();
+        let v_over_domain = v * poly_evals.domain.size_inv();
+        let normalized_poly_evals = Evaluations::from_vec_and_domain(
+            poly_evals.evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),
+            poly_evals.domain
+        );
+        let boundary_poly = Self::from_coboundary_polynomial_evals(normalized_poly_evals)?;
+        Ok((boundary_poly, v_over_domain))
+    }
+
+    /// Compute the boundary polynomial given a non coboundary
+    /// polynomial `poly` over a domain `domain`.
+    pub fn from_non_coboundary_polynomial(
+        poly:   &DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<(Self, F), Error> {
+        Self::from_non_coboundary_polynomial_evals(poly.evaluate_over_domain_by_ref(domain))
+    }
 }
 
 #[cfg(test)]
@@ -572,15 +619,19 @@ mod tests {
             // Get random poly
             let p = DensePolynomial::<Fr>::rand(size, rng);
 
-            // Compute the normalized poly and evaluations from it
-            let (_p_prime, p_prime_evals, _v) = normalize_poly_by_domain_evals::<Fr>(p, None, domain);
+            // Compute the boundary polynomial Z
+            let (z_poly, v) = BoundaryPolynomial::from_non_coboundary_polynomial(&p, domain.clone()).unwrap();
+            let z_evals = z_poly.evals();
 
-            // Compute potential polynomial
-            let (_z_poly, z_evals) = compute_coboundary_polynomial::<Fr>(
-                p_prime_evals.clone()
-            );
+            // Compute the coboundary polynomial P'(X) = P(X) - v/|domain|
+            let mut p_coeffs = p.coeffs;
+            p_coeffs[0] -= v;
+            let p_prime = DensePolynomial::from_coefficients_vec(p_coeffs);
 
-            // Test that indeed Z is a potential polynomial, e.g. :
+            // Compute the evaluations of p_prime over domain
+            let p_prime_evals = p_prime.evaluate_over_domain(domain);
+
+            // Test that indeed Z is a boundary polynomial, e.g. :
             // Z(g^i) - z(g^i-1) == p'(g^i) <=> Z(g*x) - Z(x) = p'(x) for each x in domain
             for i in 1..size {
                 assert_eq!(

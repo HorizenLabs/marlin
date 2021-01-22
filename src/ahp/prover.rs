@@ -181,7 +181,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let z_b = index.b.iter().map(|row| inner_prod_fn(row)).collect();
         end_timer!(eval_z_b_time);
 
-        let zk_bound = 1; // One query is sufficient for our desired soundness
+        // Due to our way of "batching" polynomials we need an extra query.
+        let zk_bound = 2;
 
         let domain_h = get_best_evaluation_domain::<F>(num_constraints)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
@@ -222,6 +223,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         ),
         Error,
     > {
+        let zk_bound = state.zk_bound;
+
         let round_time = start_timer!(|| "AHP::Prover::FirstRound");
         let domain_h = &state.domain_h;
 
@@ -258,30 +261,31 @@ impl<F: PrimeField> AHPForR1CS<F> {
             })
             .collect();
 
+        // Degree of w_poly before dividing by v_X equals max(|H| - 1 , (zk_bound - 1) + |H|) = (zk_bound - 1) + |H|
         let w_poly = &EvaluationsOnDomain::from_vec_and_domain(w_poly_evals, domain_h.clone())
             .interpolate()
-            + &(&Polynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
+            + &(&Polynomial::from_coefficients_slice(&vec![F::rand(rng); zk_bound]) * &v_H);
         let (w_poly, remainder) = w_poly.divide_by_vanishing_poly(&domain_x).unwrap();
-        assert!(remainder.is_zero());
+        assert!(remainder.is_zero()); // w_poly is divisible by v_X because we set w = 0 on X.
         end_timer!(w_poly_time);
 
         let z_a_poly_time = start_timer!(|| "Computing z_A polynomial");
         let z_a = state.z_a.clone().unwrap();
         let z_a_poly = &EvaluationsOnDomain::from_vec_and_domain(z_a, domain_h.clone()).interpolate()
-            + &(&Polynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
+            + &(&Polynomial::from_coefficients_slice(&vec![F::rand(rng); zk_bound]) * &v_H);
         end_timer!(z_a_poly_time);
 
         let z_b_poly_time = start_timer!(|| "Computing z_B polynomial");
         let z_b = state.z_b.clone().unwrap();
         let z_b_poly = &EvaluationsOnDomain::from_vec_and_domain(z_b, domain_h.clone()).interpolate()
-            + &(&Polynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
+            + &(&Polynomial::from_coefficients_slice(&vec![F::rand(rng); zk_bound]) * &v_H);
         end_timer!(z_b_poly_time);
 
         let msg = ProverMsg::EmptyMessage;
 
-        assert!(w_poly.degree() <= domain_h.size() - domain_x.size() - 1);
-        assert!(z_a_poly.degree() <= domain_h.size() - 1);
-        assert!(z_b_poly.degree() <= domain_h.size() - 1);
+        assert!(w_poly.degree() <= domain_h.size() - domain_x.size() + zk_bound - 1);
+        assert!(z_a_poly.degree() <= domain_h.size() + zk_bound - 1);
+        assert!(z_b_poly.degree() <= domain_h.size() + zk_bound - 1);
 
         let w = LabeledPolynomial::new("w".to_string(), w_poly, None, Some(1));
         let z_a = LabeledPolynomial::new("z_a".to_string(), z_a_poly, None, Some(1));
@@ -355,6 +359,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let summed_z_m_poly_time = start_timer!(|| "Compute z_m poly");
         let (z_a_poly, z_b_poly) = state.mz_polys.as_ref().unwrap();
+
+        // Performed via FFT using a domain of size = deg(z_a) + deg(z_b) + 1
         let z_c_poly = z_a_poly.polynomial() * z_b_poly.polynomial();
 
         let mut summed_z_m_coeffs = z_c_poly.coeffs;
@@ -400,23 +406,25 @@ impl<F: PrimeField> AHPForR1CS<F> {
         )
         .interpolate();
         let w_poly = state.w_poly.as_ref().unwrap();
+
+        // deg(z_poly) = |H|- 1 + zk_bound
         let mut z_poly = w_poly.polynomial().mul_by_vanishing_poly(domain_x.size());
         z_poly.coeffs.par_iter_mut()
             .zip(&x_poly.coeffs)
             .for_each(|(z, x)| *z += x);
-        assert!(z_poly.degree() <= domain_h.size() - 1);
+        assert!(z_poly.degree() <= domain_h.size() + zk_bound - 1);
 
         end_timer!(z_poly_time);
 
         let outer_poly_time = start_timer!(|| "Compute outer sumcheck poly");
 
         let mul_domain_size = *[
-            r_alpha_poly.coeffs.len() + summed_z_m.coeffs.len(),
-            t_poly.coeffs.len() + z_poly.len(),
+            r_alpha_poly.degree() + summed_z_m.degree(),
+            t_poly.degree() + z_poly.degree(),
         ]
         .iter()
         .max()
-        .unwrap();
+        .unwrap() + 1;
         let mul_domain = get_best_evaluation_domain::<F>(mul_domain_size)
             .expect("field is not smooth enough to construct domain");
         let mut r_alpha_evals = r_alpha_poly.evaluate_over_domain_by_ref(mul_domain.clone());
@@ -424,68 +432,62 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let z_poly_evals = z_poly.evaluate_over_domain_by_ref(mul_domain.clone());
         let t_poly_m_evals = t_poly.evaluate_over_domain_by_ref(mul_domain.clone());
 
-        // Let b = zk_bound. This blinding polynomial is of type
-        // (c_0 + ... c_(b-1) * X ^ (b - 1) )
-        let mut randomization_poly = Polynomial::rand(zk_bound * 2, rng);
-        randomization_poly = randomization_poly.mul_by_vanishing_poly(domain_h.size());
-        let randomization_poly_evals = randomization_poly.evaluate_over_domain_by_ref(mul_domain.clone());
-
         r_alpha_evals.evals.par_iter_mut()
             .zip(&summed_z_m_evals.evals)
             .zip(&z_poly_evals.evals)
             .zip(&t_poly_m_evals.evals)
-            .zip(&randomization_poly_evals.evals)
-            .for_each(|((((a, b), &c), d), e)| {
+            .for_each(|(((a, b), &c), d)| {
                 *a *= b;
                 *a -= c * d;
-                *a += e;
             });
         let outer_poly = r_alpha_evals.interpolate_by_ref();
         end_timer!(outer_poly_time);
 
         let z_1_time = start_timer!(|| "Compute z_1 poly");
-        let (_, outer_poly_prime_evals, _) = normalize_poly_by_domain_evals(
-            outer_poly,
-            Some(r_alpha_evals.evals.clone()),
-            mul_domain.clone()
+
+
+        // In order to re-use the outer_poly_evals for computing z_1 (because z_1 shall be
+        // computed over domain H, while outer_poly_evals are on mul_domain), we ensure that
+        // H is a sub-domain of mul_domain.
+        assert_eq!(mul_domain.size() % domain_h.size(), 0);
+        let step = mul_domain.size()/domain_h.size();
+        assert_eq!(domain_h.group_gen(), mul_domain.group_gen().pow(&[step as u64]));
+
+        let outer_poly_evals_on_H = EvaluationsOnDomain::from_vec_and_domain(
+            r_alpha_evals.evals.clone().into_iter().step_by(step).collect(),
+            domain_h.clone()
         );
-        let (_, mut z_1_evals) = compute_coboundary_polynomial(outer_poly_prime_evals);
+        let mut z_1 = BoundaryPolynomial::from_coboundary_polynomial_evals(
+            outer_poly_evals_on_H
+        ).unwrap().polynomial();
+
         // Let b = zk_bound. This blinding polynomial is of type
         // (c_0 + ... c_(2b-1) * X ^ (2b - 1) )
-        let mut randomization_poly = Polynomial::rand((zk_bound * 2) + 1, rng);
+        let mut randomization_poly = Polynomial::rand(2 * zk_bound - 1, rng);
         randomization_poly = randomization_poly.mul_by_vanishing_poly(domain_h.size());
-        let randomization_poly_evals = randomization_poly.evaluate_over_domain_by_ref(mul_domain.clone());
 
         // Add the blinding polynomial to z_1
-        z_1_evals.evals.par_iter_mut()
-            .zip(&randomization_poly_evals.evals)
-            .for_each(|(a, b)| {
-                *a += b
-            });
-        let z_1 = z_1_evals.interpolate_by_ref();
+        z_1 = &z_1 + &randomization_poly;
         end_timer!(z_1_time);
 
-        let h_1_time = start_timer!(|| "Compute  h_1 poly");
-        // h1(X) = (outer_poly(X) + z1(X) - z1(g*X)) / vanishing_poly
+        assert!(z_1.degree() <= domain_h.size() + 2 * zk_bound - 1);
 
-        let g_s: Vec<F> = mul_domain.elements().collect();
-        let mut z_1_g_evals = z_1_evals.clone();
-        // z_1_g_evals = sum_i (z_1_evals[i]*g^i)
-        z_1_g_evals.evals.iter_mut().zip(g_s.iter()).for_each(|(a, b)| *a *= b);
+        // h1(X) = (outer_poly(X) + z1(X) - z1(g*X)) / v_H
+        let h_1_time = start_timer!(|| "Compute h_1 poly");
+        let z_1_g = {
+            let z_1_g_coeffs: Vec<F> = domain_h.elements().zip(z_1.coeffs.iter()).map(|(a, b)| {
+                a * b
+            }).collect();
+            Polynomial::from_coefficients_vec(z_1_g_coeffs)
+        };
 
-        r_alpha_evals.evals.par_iter_mut()
-            .zip(z_1_evals.evals)
-            .zip(z_1_g_evals.evals)
-            .for_each(|((a, b), c)|{
-                *a += b - c;
-            });
-        let mut h_1 = r_alpha_evals.interpolate();
-        h_1= h_1.divide_by_vanishing_poly(domain_h).unwrap().0;
+        let mut h_1 = &outer_poly + &(&z_1 - &z_1_g);
+        h_1 = h_1.divide_by_vanishing_poly(domain_h).unwrap().0;
         end_timer!(h_1_time);
 
         let msg = ProverMsg::EmptyMessage;
 
-        assert!(h_1.degree() <= 2 * domain_h.size() - 2);
+        assert!(h_1.degree() <= 2 * domain_h.size() + 2 * zk_bound - 3);
 
         let oracles = ProverSecondOracles {
             t: LabeledPolynomial::new("t".into(), t_poly, None, None),
@@ -495,7 +497,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 None,
                 Some(1),
             ),
-            h_1: LabeledPolynomial::new("h_1".into(), h_1, None, None),
+            // TODO: Double check if hiding bound is needed here
+            h_1: LabeledPolynomial::new("h_1".into(), h_1, None, Some(1)),
         };
 
         state.w_poly = None;
@@ -575,21 +578,14 @@ impl<F: PrimeField> AHPForR1CS<F> {
         }
         end_timer!(f_evals_time);
 
-        let f_poly_time = start_timer!(|| "Computing f poly");
-        let f = EvaluationsOnDomain::from_vec_and_domain(f_vals_on_K.clone(), domain_k.clone()).interpolate();
-        end_timer!(f_poly_time);
-
         let z_2_time = start_timer!(|| "Compute z_2 poly");
-        let (_, f_prime_evals, _) = normalize_poly_by_domain_evals(
-            f.clone(),
-            Some(f_vals_on_K),
-            domain_k.clone()
-        );
-        let (z_2, _) = compute_coboundary_polynomial(f_prime_evals);
+        let (z_2, normalized_v) = BoundaryPolynomial::from_non_coboundary_polynomial_evals(
+            EvaluationsOnDomain::from_vec_and_domain(f_vals_on_K, domain_k.clone())
+        ).unwrap();
+        let z_2 = z_2.polynomial();
+
         let z_2_g = {
-            //TODO: Is this correct ? Otherwise we need to work on the evals and interpolate
-            let g_s: Vec<F> = domain_k.elements().collect();
-            let z_2_g_coeffs: Vec<F> = g_s.into_iter().zip(z_2.coeffs.iter()).map(|(a, b)| {
+            let z_2_g_coeffs: Vec<F> = domain_k.elements().into_iter().zip(z_2.coeffs.iter()).map(|(a, b)| {
                 a * b
             }).collect();
             Polynomial::from_coefficients_vec(z_2_g_coeffs)
@@ -644,8 +640,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let b_poly = EvaluationsOnDomain::from_vec_and_domain(b_poly_on_B, domain_b).interpolate();
         end_timer!(b_poly_time);
 
-        let h_2_poly_time = start_timer!(|| "Computing sumcheck h poly");
-        let h_2 = (&a_poly - &(&b_poly * &(&f + &(&z_2_g - &z_2))))
+        let h_2_poly_time = start_timer!(|| "Computing h_2 poly");
+        let mut f_poly = &z_2_g - &z_2;
+        f_poly.coeffs.par_iter_mut().for_each(|coeff| *coeff += normalized_v);
+        let h_2 = (&a_poly - &(&b_poly * &f_poly))
             .divide_by_vanishing_poly(&domain_k)
             .unwrap()
             .0;
