@@ -365,6 +365,19 @@ pub struct BoundaryPolynomial<F: PrimeField> {
     evals: Evaluations<F>,
 }
 
+impl<F: PrimeField> Clone for BoundaryPolynomial<F> {
+    fn clone(&self) -> Self {
+        let cloned_evals = Evaluations::<F>::from_vec_and_domain(
+            self.evals.evals.clone(),
+            self.evals.domain.clone_and_box(),
+        );
+        Self {
+            poly: self.poly.clone(),
+            evals: cloned_evals
+        }
+    }
+}
+
 impl<F: PrimeField> BoundaryPolynomial<F> {
 
     /// Construct a `self` instance from a boundary polynomial.
@@ -376,7 +389,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
         let poly_evals = (&boundary_poly).evaluate_over_domain_by_ref(domain);
 
         // Poly evals over domain should sum to zero
-        if poly_evals.evals.iter().sum::<F>() != F::zero() {
+        if poly_evals.evals.par_iter().sum::<F>() != F::zero() {
             Err(Error::InvalidBoundaryPolynomial)?
         }
 
@@ -460,7 +473,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
         poly_evals: Evaluations<F>
     ) -> Result<(Self, F), Error>
     {
-        let v = poly_evals.evals.iter().sum::<F>();
+        let v = poly_evals.evals.par_iter().sum::<F>();
         let v_over_domain = v * poly_evals.domain.size_inv();
         let normalized_poly_evals = Evaluations::from_vec_and_domain(
             poly_evals.evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),

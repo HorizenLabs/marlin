@@ -445,7 +445,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let z_1_time = start_timer!(|| "Compute z_1 poly");
 
-
         // In order to re-use the outer_poly_evals for computing z_1 (because z_1 shall be
         // computed over domain H, while outer_poly_evals are on mul_domain), we ensure that
         // H is a sub-domain of mul_domain.
@@ -472,14 +471,29 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         assert!(z_1.degree() <= domain_h.size() + 2 * zk_bound - 1);
 
+        let z_1_g_time = start_timer!(|| "Compute z_1_g poly");
+        let z_1_g = {
+
+            // z_1 has higher degree with respect to |H| due to randomization;
+            // therefore, when constructing z_1_g we have to take care of the
+            // higher powers of g. So the g vector will be:
+            // (1, g, g^2,...., g^n-1, 1, g, ..., g^((deg(z1) - 1) - |H|)
+            let size_diff = z_1.coeffs.len() as i32 - domain_h.size() as i32;
+
+            // Exclude extraordinary high zk_bound
+            assert!(size_diff >= 0 && size_diff <= domain_h.size() as i32);
+
+            let mut g_s = domain_h.elements().collect::<Vec<F>>();
+            g_s.append(&mut g_s[..size_diff as usize].to_vec());
+
+            let mut z_1_g = z_1.clone();
+            z_1_g.coeffs.par_iter_mut().zip(g_s).for_each(|(a, b)| { *a *= b } );
+            z_1_g
+        };
+        end_timer!(z_1_g_time);
+
         // h1(X) = (outer_poly(X) + z1(X) - z1(g*X)) / v_H
         let h_1_time = start_timer!(|| "Compute h_1 poly");
-        let z_1_g = {
-            let z_1_g_coeffs: Vec<F> = domain_h.elements().zip(z_1.coeffs.iter()).map(|(a, b)| {
-                a * b
-            }).collect();
-            Polynomial::from_coefficients_vec(z_1_g_coeffs)
-        };
 
         let mut h_1 = &outer_poly + &(&z_1 - &z_1_g);
         h_1 = h_1.divide_by_vanishing_poly(domain_h).unwrap().0;
@@ -583,14 +597,16 @@ impl<F: PrimeField> AHPForR1CS<F> {
             EvaluationsOnDomain::from_vec_and_domain(f_vals_on_K, domain_k.clone())
         ).unwrap();
         let z_2 = z_2.polynomial();
-
-        let z_2_g = {
-            let z_2_g_coeffs: Vec<F> = domain_k.elements().into_iter().zip(z_2.coeffs.iter()).map(|(a, b)| {
-                a * b
-            }).collect();
-            Polynomial::from_coefficients_vec(z_2_g_coeffs)
-        };
         end_timer!(z_2_time);
+
+        let z_2_g_time = start_timer!(|| "Compute z_2_g poly");
+        let z_2_g = {
+            let mut z_2_g = z_2.clone();
+            let g_s = domain_k.elements().collect::<Vec<F>>();
+            z_2_g.coeffs.par_iter_mut().zip(g_s).for_each(|(a, b)| { *a *= b });
+            z_2_g
+        };
+        end_timer!(z_2_g_time);
 
         let domain_b = get_best_evaluation_domain(3 * domain_k.size() - 3)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
@@ -642,7 +658,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let h_2_poly_time = start_timer!(|| "Computing h_2 poly");
         let mut f_poly = &z_2_g - &z_2;
-        f_poly.coeffs.par_iter_mut().for_each(|coeff| *coeff += normalized_v);
+        f_poly.coeffs[0] += normalized_v;
         let h_2 = (&a_poly - &(&b_poly * &f_poly))
             .divide_by_vanishing_poly(&domain_k)
             .unwrap()
