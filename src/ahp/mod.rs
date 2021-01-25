@@ -392,7 +392,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // Poly evals over domain should sum to zero
         if poly_evals.evals.par_iter().sum::<F>() != F::zero() {
-            Err(Error::InvalidPolynomial("The given boundary polynomial evaluations over the given domain don't sum to zero"))?
+            Err(Error::InvalidPolynomial("The given boundary polynomial evaluations over the given domain don't sum to zero".to_owned()))?
         }
 
         Ok( Self { poly: boundary_poly, evals: poly_evals } )
@@ -437,7 +437,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // Poly evals over domain should sum to zero
         if poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] != F::zero() {
-            Err(Error::InvalidPolynomial("The given coboundary polynomial evaluations over the given domain don't sum to zero"))?
+            Err(Error::InvalidPolynomial("The given coboundary polynomial evaluations over the given domain don't sum to zero".to_owned()))?
         }
 
         z_evals.append(&mut poly_cum_sum_evals);
