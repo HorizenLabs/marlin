@@ -67,6 +67,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
     /// of this protocol.
     /// The number of the variables must include the "one" variable. That is, it
     /// must be with respect to the number of formatted public inputs.
+    // TODO: Check setup() and trim() functions in poly-commit to see if they should
+    //       be updated too
     pub fn max_degree(
         num_constraints: usize,
         num_variables: usize,
@@ -303,8 +305,8 @@ pub enum Error {
     NonSquareMatrix,
     /// An error occurred during constraint generation.
     ConstraintSystemError(SynthesisError),
-    /// The coboundary polynomial evaluations over the domain don't sum to zero.
-    InvalidBoundaryPolynomial,
+    /// The given polynomial doesn't respect specific requirements.
+    InvalidPolynomial(String),
 }
 
 impl From<SynthesisError> for Error {
@@ -390,7 +392,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // Poly evals over domain should sum to zero
         if poly_evals.evals.par_iter().sum::<F>() != F::zero() {
-            Err(Error::InvalidBoundaryPolynomial)?
+            Err(Error::InvalidPolynomial("The given boundary polynomial evaluations over the given domain don't sum to zero"))?
         }
 
         Ok( Self { poly: boundary_poly, evals: poly_evals } )
@@ -435,7 +437,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // Poly evals over domain should sum to zero
         if poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] != F::zero() {
-            Err(Error::InvalidBoundaryPolynomial)?
+            Err(Error::InvalidPolynomial("The given coboundary polynomial evaluations over the given domain don't sum to zero"))?
         }
 
         z_evals.append(&mut poly_cum_sum_evals);

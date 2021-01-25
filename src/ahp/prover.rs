@@ -90,9 +90,9 @@ impl<F: Field> ProverFirstOracles<F> {
 pub struct ProverSecondOracles<F: Field> {
     /// The polynomial `t` that is produced in the first round.
     pub t: LabeledPolynomial<F>,
-    /// The polynomial `z` resulting from the first sumcheck.
+    /// The boundary polynomial `z_1` resulting from the first sumcheck.
     pub z_1: LabeledPolynomial<F>,
-    /// The polynomial `h` resulting from the first sumcheck.
+    /// The polynomial `h_1` resulting from the first sumcheck.
     pub h_1: LabeledPolynomial<F>,
 }
 
@@ -105,9 +105,9 @@ impl<F: Field> ProverSecondOracles<F> {
 
 /// The third set of prover oracles.
 pub struct ProverThirdOracles<F: Field> {
-    /// The polynomial `g` resulting from the second sumcheck.
+    /// The boundary polynomial `z_2` resulting from the second sumcheck.
     pub z_2: LabeledPolynomial<F>,
-    /// The polynomial `h` resulting from the second sumcheck.
+    /// The polynomial `h_2` resulting from the second sumcheck.
     pub h_2: LabeledPolynomial<F>,
 }
 
