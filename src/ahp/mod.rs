@@ -15,9 +15,13 @@ pub mod prover;
 /// Describes data structures and the algorithms used by the AHP verifier.
 pub mod verifier;
 
-/// The algebraic holographic proof defined in [CHMMVW19](https://eprint.iacr.org/2019/1047).
-/// Currently, this AHP only supports inputs of size one
-/// less than a power of 2 (i.e., of the form 2^n - 1).
+/// The algebraic holographic proof defined in [CHMMVW19](https://eprint.iacr.org/2019/1047),
+/// modified as described in our white paper (TODO: add link):
+/// We adapt the grand product argument of [PLONK](https://eprint.iacr.org/2019/953), which is a
+/// coboundary criterion for cocycles over the group action on the domain, and prove the both outer
+/// and inner sumcheck without low degree extension of the polynomials in question.
+/// This allows a more lightweight randomization to obtain zero-knowledge, and moreover gets
+/// rid of proving degree bounds.
 pub struct AHPForR1CS<F: Field> {
     field: PhantomData<F>,
 }
