@@ -462,6 +462,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         // Let b = zk_bound. This blinding polynomial is of type
         // (c_0 + ... c_(2b-1) * X ^ (2b - 1) )
+        // since the boundary poly is queried twice as much as the others
         let mut randomization_poly = Polynomial::rand(2 * zk_bound - 1, rng);
         randomization_poly = randomization_poly.mul_by_vanishing_poly(domain_h.size());
 
@@ -511,7 +512,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 None,
                 Some(1),
             ),
-            // TODO: Double check if hiding bound is needed here
             h_1: LabeledPolynomial::new("h_1".into(), h_1, None, Some(1)),
         };
 

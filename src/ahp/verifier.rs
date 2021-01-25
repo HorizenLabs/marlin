@@ -111,33 +111,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let g_k = state.domain_k.group_gen();
 
         let mut query_set = QuerySet::new();
-        // For the first linear combination
+
         // Outer sumcheck test:
-        //   s(beta) + r(alpha, beta) * (sum_M eta_M z_M(beta)) - t(beta) * z(beta)
-        // = h_1(beta) * v_H(beta) + beta * g_1(beta)
-        //
-        // Note that z is the interpolation of x || w, so it equals x + v_X * w
-        // We also use an optimization: instead of explicitly calculating z_c, we
-        // use the "virtual oracle" z_b * z_c
-        //
-        // LinearCombination::new(
-        //      outer_sumcheck
-        //      vec![
-        //          (F::one(), "mask_poly".into()),
-        //
-        //          (r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta), "z_a".into()),
-        //          (r_alpha_at_beta * eta_b * z_b_at_beta, LCTerm::One),
-        //
-        //          (-t_at_beta * v_X_at_beta, "w".into()),
-        //          (-t_at_beta * x_at_beta, LCTerm::One),
-        //
-        //          (-v_H_at_beta, "h_1".into()),
-        //          (-beta * g_1_at_beta, LCTerm::One),
-        //      ],
-        //  )
-        //  LinearCombination::new("z_b", vec![(F::one(), z_b)])
-        //  LinearCombination::new("g_1", vec![(F::one(), g_1)], rhs::new(g_1_at_beta))
-        //  LinearCombination::new("t", vec![(F::one(), t)])
+        //   r(alpha, beta) * (sum_M eta_M z_M(beta)) - t(beta) * z(beta)
+        // = z_1(g_H * beta) - z_1(beta) + h_1(beta) * v_H(beta)
         query_set.insert(("z_1".into(), ("beta".into(), beta)));
         query_set.insert(("z_1".into(), ("g * beta".into(), g_h * beta)));
         query_set.insert(("z_b".into(), ("beta".into(), beta)));
@@ -147,61 +124,11 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // For the second linear combination
         // Inner sumcheck test:
         //   h_2(gamma) * v_K(gamma)
-        // = a(gamma) - b(gamma) * (gamma g_2(gamma) + t(beta) / |K|)
+        // = a(gamma) - b(gamma) * (z_2(g_K * gamma) - z_2(gamma) + t(beta) / |K|)
         //
         // where
         //   a(X) := sum_M (eta_M v_H(beta) v_H(alpha) val_M(X) prod_N (beta - row_N(X)) (alpha - col_N(X)))
         //   b(X) := prod_M (beta - row_M(X)) (alpha - col_M(X))
-        //
-        // We define "n_denom" := prod_N (beta - row_N(X)) (alpha - col_N(X)))
-        //
-        // LinearCombination::new("g_2", vec![(F::one(), g_2)]);
-        //
-        // LinearCombination::new(
-        //     "a_denom".into(),
-        //     vec![
-        //         (alpha * beta, LCTerm::One),
-        //         (-alpha, "a_row"),
-        //         (-beta, "a_col"),
-        //         (F::one(), "a_row_col"),
-        // ]);
-        // LinearCombination::new(
-        //     "b_denom".into(),
-        //     vec![
-        //         (alpha * beta, LCTerm::One),
-        //         (-alpha, "b_row"),
-        //         (-beta, "b_col"),
-        //         (F::one(), "b_row_col"),
-        // ]);
-        // LinearCombination::new(
-        //     "c_denom".into(),
-        //     vec![
-        //         (alpha * beta, LCTerm::one()),
-        //         (-alpha, "c_row"),
-        //         (-beta, "c_col"),
-        //         (F::one(), "c_row_col"),
-        // ]);
-        //
-        // LinearCombination::new(
-        //     "a_poly".into(),
-        //     vec![
-        //          (eta_a * b_denom_at_gamma * c_denom_at_gamma, "a_val".into()),
-        //          (eta_b * a_denom_at_gamma * c_denom_at_gamma, "b_val".into()),
-        //          (eta_c * b_denom_at_gamma * a_denom_at_gamma, "c_val".into()),
-        //     ],
-        // )
-        //
-        // let v_H_at_alpha = domain_h.evaluate_vanishing_polynomial(alpha);
-        // let v_H_at_beta = domain_h.evaluate_vanishing_polynomial(beta);
-        // let v_K_at_gamma = domain_k.evaluate_vanishing_polynomial(gamma);
-        //
-        // let a_poly_lc *= v_H_at_alpha * v_H_at_beta;
-        // let b_lc = LinearCombination::new("b_poly", vec![(a_denom_at_gamma * b_denom_at_gamma * c_denom_at_gamma, "one")]);
-        // let h_lc = LinearCombination::new("b_poly", vec![(v_K_at_gamma, "h_2")]);
-        //
-        // // This LC is the only one that is evaluated:
-        // let inner_sumcheck = a_poly_lc - (b_lc * (gamma * &g_2_at_gamma + &(t_at_beta / &k_size))) - h_lc
-        // main_lc.set_label("inner_sumcheck");
         query_set.insert(("z_2".into(), ("gamma".into(), gamma)));
         query_set.insert(("z_2".into(), ("g * gamma".into(), g_k * gamma)));
         query_set.insert(("a_denom".into(), ("gamma".into(), gamma)));

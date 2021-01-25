@@ -305,8 +305,8 @@ pub enum Error {
     NonSquareMatrix,
     /// An error occurred during constraint generation.
     ConstraintSystemError(SynthesisError),
-    /// The given polynomial doesn't respect specific requirements.
-    InvalidPolynomial(String),
+    /// The given coboundary polynomial evaluations over a domain don't sum to zero.
+    InvalidCoboundaryPolynomial,
 }
 
 impl From<SynthesisError> for Error {
@@ -359,7 +359,7 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for Box<dyn EvaluationD
 /// A coboundary polynomial over a domain D is a polynomial P
 /// s.t. sum_{x_in_D}(P(x)) = 0.
 /// Given a coboundary polynomial P over a domain D, a boundary
-/// polynomial is a polynomial Z s.t. P(x) = Z(g*x) - Z(x).
+/// polynomial is a polynomial Z s.t. P(X) = Z(g X) - Z(X) mod v_D(X)
 pub struct BoundaryPolynomial<F: PrimeField> {
     /// The boundary polynomial.
     poly: DensePolynomial<F>,
@@ -389,11 +389,6 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
     ) -> Result<Self, Error>
     {
         let poly_evals = (&boundary_poly).evaluate_over_domain_by_ref(domain);
-
-        // Poly evals over domain should sum to zero
-        if poly_evals.evals.par_iter().sum::<F>() != F::zero() {
-            Err(Error::InvalidPolynomial("The given boundary polynomial evaluations over the given domain don't sum to zero".to_owned()))?
-        }
 
         Ok( Self { poly: boundary_poly, evals: poly_evals } )
     }
@@ -425,9 +420,12 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // The other coefficients of the boundary polynomial will be the cumulative sum
         // of the evaluations of the coboundary poly over the domain, e.g.:
-        // Z(g) = Z(1) + p'(g),
-        // ....
-        // Z(g^|H| - 1) = Z(g^|H| - 2) + p'(g^|H| - 1) = p'(g) + p'(g^2) + ... + p'(g^|H - 1|)
+        // Z(1) = 0
+        // Z(g) = Z(1) + p'(1)
+        // Z(g^2) = Z(1) + p'(1) + p'(g)
+        // ...
+        // Z(g^(|H| - 1) )= Z(1) + p(1) + p'(g) + p'(g^2) + .... + p'(g^( |H| - 2 )) ,
+        // and finally
         // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
         //TODO: Prefix sum here. Parallelize ? Is it worth it ? (rayon (crossbeam too) has no parallel impl for scan())
         let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
@@ -437,7 +435,7 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
 
         // Poly evals over domain should sum to zero
         if poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] != F::zero() {
-            Err(Error::InvalidPolynomial("The given coboundary polynomial evaluations over the given domain don't sum to zero".to_owned()))?
+            Err(Error::InvalidCoboundaryPolynomial)?
         }
 
         z_evals.append(&mut poly_cum_sum_evals);
@@ -466,11 +464,9 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
         Self::from_coboundary_polynomial_evals(poly.evaluate_over_domain_by_ref(domain))
     }
 
-    /// Compute the boundary polynomial given a non-coboundary polynomial
-    /// evaluations `poly_evals` over the elements of a domain D.
-    /// To make the poly sum to 0 over D, its evaluations are shifted by
-    /// a factor v = sum(`poly_evals`)/|D|.
-    /// Return the boundary polynomial and v.
+    /// Given the domain evaluations `poly_evals` of a polynomial p(X) with non-zero
+    /// domain sum v = Sum_{x in D} p(x), construct a boundary polynomial Z(X) for the
+    /// centered polynomial p'(X) = p(X) - v/|D|, and return both Z(X) and v/|D|.
     pub fn from_non_coboundary_polynomial_evals(
         poly_evals: Evaluations<F>
     ) -> Result<(Self, F), Error>
@@ -485,8 +481,9 @@ impl<F: PrimeField> BoundaryPolynomial<F> {
         Ok((boundary_poly, v_over_domain))
     }
 
-    /// Compute the boundary polynomial given a non coboundary
-    /// polynomial `poly` over a domain `domain`.
+    /// Given a polynomial `poly` with non-zero sum over `domain` v = Sum_{x in D} p(x),
+    /// construct a boundary polynomial Z(X) for the centered polynomial
+    /// p'(X) = p(X) - v/|D|, and return both Z(X) and v/|D|.
     pub fn from_non_coboundary_polynomial(
         poly:   &DensePolynomial<F>,
         domain: Box<dyn EvaluationDomain<F>>
