@@ -1,7 +1,7 @@
 use crate::{String, ToString, Vec};
 use algebra::{Field, PrimeField};
 use std::{borrow::Borrow, marker::PhantomData};
-use algebra_utils::{EvaluationDomain, get_best_evaluation_domain};
+use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, DensePolynomial, Evaluations};
 use poly_commit::{LCTerm, LabeledPolynomial, LinearCombination};
 use r1cs_core::SynthesisError;
 
@@ -15,9 +15,13 @@ pub mod prover;
 /// Describes data structures and the algorithms used by the AHP verifier.
 pub mod verifier;
 
-/// The algebraic holographic proof defined in [CHMMVW19](https://eprint.iacr.org/2019/1047).
-/// Currently, this AHP only supports inputs of size one
-/// less than a power of 2 (i.e., of the form 2^n - 1).
+/// The algebraic holographic proof defined in [CHMMVW19](https://eprint.iacr.org/2019/1047),
+/// modified as described in our white paper (TODO: add link):
+/// We adapt the grand product argument of [PLONK](https://eprint.iacr.org/2019/953), which is a
+/// coboundary criterion for cocycles over the group action on the domain, and prove the both outer
+/// and inner sumcheck without low degree extension of the polynomials in question.
+/// This allows a more lightweight randomization to obtain zero-knowledge, and moreover gets
+/// rid of proving degree bounds.
 pub struct AHPForR1CS<F: Field> {
     field: PhantomData<F>,
 }
@@ -50,11 +54,11 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
     /// The labels for the polynomials output by the AHP prover.
     #[rustfmt::skip]
-    pub const PROVER_POLYNOMIALS: [&'static str; 9] = [
+    pub const PROVER_POLYNOMIALS: [&'static str; 8] = [
         // First sumcheck
-        "w", "z_a", "z_b", "mask_poly", "t", "g_1", "h_1",
+        "w", "z_a", "z_b", "t", "z_1", "h_1",
         // Second sumcheck
-        "g_2", "h_2",
+        "z_2", "h_2",
     ];
 
     /// THe linear combinations that are statically known to evaluate to zero.
@@ -88,6 +92,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
     /// of this protocol.
     /// The number of the variables must include the "one" variable. That is, it
     /// must be with respect to the number of formatted public inputs.
+    // TODO: Check setup() and trim() functions in poly-commit to see if they should
+    //       be updated too
     pub fn max_degree(
         num_constraints: usize,
         num_variables: usize,
@@ -95,35 +101,23 @@ impl<F: PrimeField> AHPForR1CS<F> {
     ) -> Result<usize, Error> {
         let padded_matrix_dim =
             constraint_systems::padded_matrix_dim(num_variables, num_constraints);
-        let zk_bound = 1;
         let domain_h_size = get_best_evaluation_domain::<F>(padded_matrix_dim)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         let domain_k_size = get_best_evaluation_domain::<F>(num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
+        let zk_bound = 2; // Due to our way of "batching" polynomials we need an extra query.
         Ok(*[
-            2 * domain_h_size + zk_bound - 2,
-            3 * domain_h_size + 2 * zk_bound - 3, //  mask_poly
-            domain_h_size,
-            domain_h_size,
-            3 * domain_k_size - 3,
+            2 * domain_h_size + 2 * zk_bound - 3, // h_1 max degree
+            domain_h_size - 1, // For exceptional case of high zk_bound
+            3 * domain_k_size - 4, // h_2 max degree
         ]
         .iter()
         .max()
-        .unwrap())
+        .unwrap()) // This is really the degree not the number of coefficients
     }
 
     /// Get all the strict degree bounds enforced in the AHP.
-    pub fn get_degree_bounds(info: &indexer::IndexInfo<F>) -> [usize; 2] {
-        let mut degree_bounds = [0usize; 2];
-        let num_constraints = info.num_constraints;
-        let num_non_zero = info.num_non_zero;
-        let h_size = get_best_evaluation_domain::<F>(num_constraints).unwrap().size();
-        let k_size = get_best_evaluation_domain::<F>(num_non_zero).unwrap().size();
-
-        degree_bounds[0] = h_size - 2;
-        degree_bounds[1] = k_size - 2;
-        degree_bounds
-    }
+    pub fn get_degree_bounds(_info: &indexer::IndexInfo<F>) -> [usize; 2] { [0usize; 2] }
 
     /// Construct the linear combinations that are checked by the AHP.
     #[allow(non_snake_case)]
@@ -137,7 +131,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         E: EvaluationsProvider<F>,
     {
         let domain_h = &state.domain_h;
+        let g_h = domain_h.group_gen();
+
         let domain_k = &state.domain_k;
+        let g_k = domain_k.group_gen();
         let k_size = domain_k.size_as_field_element();
 
         let public_input =
@@ -161,7 +158,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         // Outer sumcheck:
         let z_b = LinearCombination::new("z_b", vec![(F::one(), "z_b")]);
-        let g_1 = LinearCombination::new("g_1", vec![(F::one(), "g_1")]);
+        let z_1 = LinearCombination::new("z_1", vec![(F::one(), "z_1")]);
         let t = LinearCombination::new("t", vec![(F::one(), "t")]);
 
         let r_alpha_at_beta = domain_h.eval_unnormalized_bivariate_lagrange_poly(alpha, beta);
@@ -171,7 +168,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let z_b_at_beta = evals.get_lc_eval(&z_b, beta)?;
         let t_at_beta = evals.get_lc_eval(&t, beta)?;
-        let g_1_at_beta = evals.get_lc_eval(&g_1, beta)?;
+        let z_1_at_beta = evals.get_lc_eval(&z_1, beta)?;
+        let z_1_at_g_beta = evals.get_lc_eval(&z_1, g_h * beta)?;
 
         let x_at_beta = x_domain
             .evaluate_all_lagrange_coefficients(beta)
@@ -184,7 +182,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let outer_sumcheck = LinearCombination::new(
             "outer_sumcheck",
             vec![
-                (F::one(), "mask_poly".into()),
 
                 (r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta), "z_a".into()),
                 (r_alpha_at_beta * eta_b * z_b_at_beta, LCTerm::One),
@@ -193,19 +190,20 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 (-t_at_beta * x_at_beta, LCTerm::One),
 
                 (-v_H_at_beta, "h_1".into()),
-                (-beta * g_1_at_beta, LCTerm::One),
+                (z_1_at_beta, LCTerm::One),
+                (-z_1_at_g_beta, LCTerm::One),
             ],
         );
         debug_assert!(evals.get_lc_eval(&outer_sumcheck, beta)?.is_zero());
 
         linear_combinations.push(z_b);
-        linear_combinations.push(g_1);
+        linear_combinations.push(z_1);
         linear_combinations.push(t);
         linear_combinations.push(outer_sumcheck);
 
         //  Inner sumcheck:
         let beta_alpha = beta * alpha;
-        let g_2 = LinearCombination::new("g_2", vec![(F::one(), "g_2")]);
+        let z_2 = LinearCombination::new("z_2", vec![(F::one(), "z_2")]);
 
         let a_denom = LinearCombination::new(
             "a_denom",
@@ -240,7 +238,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let a_denom_at_gamma = evals.get_lc_eval(&a_denom, gamma)?;
         let b_denom_at_gamma = evals.get_lc_eval(&b_denom, gamma)?;
         let c_denom_at_gamma = evals.get_lc_eval(&c_denom, gamma)?;
-        let g_2_at_gamma = evals.get_lc_eval(&g_2, gamma)?;
+        let z_2_at_gamma = evals.get_lc_eval(&z_2, gamma)?;
+        let z_2_at_g_gamma = evals.get_lc_eval(&z_2, g_k * gamma)?;
 
         let v_K_at_gamma = domain_k.evaluate_vanishing_polynomial(gamma);
 
@@ -255,7 +254,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         a *= v_H_at_alpha * v_H_at_beta;
         let b_at_gamma = a_denom_at_gamma * b_denom_at_gamma * c_denom_at_gamma;
-        let b_expr_at_gamma = b_at_gamma * (gamma * g_2_at_gamma + &(t_at_beta / &k_size));
+        let b_expr_at_gamma = b_at_gamma * (z_2_at_g_gamma - z_2_at_gamma + &(t_at_beta / &k_size));
 
         a -= &LinearCombination::new("b_expr", vec![(b_expr_at_gamma, LCTerm::One)]);
         a -= &LinearCombination::new("h_2", vec![(v_K_at_gamma, "h_2")]);
@@ -264,7 +263,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let inner_sumcheck = a;
         debug_assert!(evals.get_lc_eval(&inner_sumcheck, gamma)?.is_zero());
 
-        linear_combinations.push(g_2);
+        linear_combinations.push(z_2);
         linear_combinations.push(a_denom);
         linear_combinations.push(b_denom);
         linear_combinations.push(c_denom);
@@ -351,6 +350,8 @@ pub enum Error {
     NonSquareMatrix,
     /// An error occurred during constraint generation.
     ConstraintSystemError(SynthesisError),
+    /// The given coboundary polynomial evaluations over a domain don't sum to zero.
+    InvalidCoboundaryPolynomial,
 }
 
 impl From<SynthesisError> for Error {
@@ -400,10 +401,146 @@ impl<F: PrimeField> UnnormalizedBivariateLagrangePoly<F> for Box<dyn EvaluationD
     }
 }
 
+/// A coboundary polynomial over a domain D is a polynomial P
+/// s.t. sum_{x_in_D}(P(x)) = 0.
+/// Given a coboundary polynomial P over a domain D, a boundary
+/// polynomial is a polynomial Z s.t. P(X) = Z(g X) - Z(X) mod v_D(X)
+pub struct BoundaryPolynomial<F: PrimeField> {
+    /// The boundary polynomial.
+    poly: DensePolynomial<F>,
+    /// Evaluations of the boundary polynomial over the D domain.
+    evals: Evaluations<F>,
+}
+
+impl<F: PrimeField> Clone for BoundaryPolynomial<F> {
+    fn clone(&self) -> Self {
+        let cloned_evals = Evaluations::<F>::from_vec_and_domain(
+            self.evals.evals.clone(),
+            self.evals.domain.clone_and_box(),
+        );
+        Self {
+            poly: self.poly.clone(),
+            evals: cloned_evals
+        }
+    }
+}
+
+impl<F: PrimeField> BoundaryPolynomial<F> {
+
+    /// Construct a `self` instance from a boundary polynomial.
+    pub fn new(
+        boundary_poly: DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<Self, Error>
+    {
+        let poly_evals = (&boundary_poly).evaluate_over_domain_by_ref(domain);
+
+        Ok( Self { poly: boundary_poly, evals: poly_evals } )
+    }
+
+    /// Return the underlying boundary polynomial, consuming `self`.
+    pub fn polynomial(self) -> DensePolynomial<F> { self.poly }
+
+    /// Borrow the underlying boundary polynomial.
+    pub fn polynomial_ref(&self) -> &DensePolynomial<F> { &self.poly }
+
+    /// Return the evaluations over D of the boundary polynomial, consuming `self`.
+    pub fn evals(self) -> Evaluations<F> { self.evals }
+
+    /// Return the evaluations over D of the boundary polynomial, borrowing `self`.
+    pub fn evals_ref(&self) -> &Evaluations<F> { &self.evals }
+
+    /// Compute the boundary polynomial given a coboundary polynomial
+    /// evaluations `poly_evals` over the elements of a domain D.
+    pub fn from_coboundary_polynomial_evals(
+        poly_evals: Evaluations<F>
+    ) -> Result<Self, Error>
+    {
+        let domain = poly_evals.domain;
+        let evals = poly_evals.evals;
+
+        // Z(1) = 0, or any arbitrary value
+        let mut z_evals = Vec::with_capacity(evals.len());
+        z_evals.push(F::zero());
+
+        // The other coefficients of the boundary polynomial will be the cumulative sum
+        // of the evaluations of the coboundary poly over the domain, e.g.:
+        // Z(1) = 0
+        // Z(g) = Z(1) + p'(1)
+        // Z(g^2) = Z(1) + p'(1) + p'(g)
+        // ...
+        // Z(g^(|H| - 1) )= Z(1) + p(1) + p'(g) + p'(g^2) + .... + p'(g^( |H| - 2 )) ,
+        // and finally
+        // Z(g^|H|) = 0 = p'(g) + p'(g^2) + ... + p'(g^|H - 1|) + p'(g^|H|), will be excluded
+        //TODO: Prefix sum here. Parallelize ? Is it worth it ? (rayon (crossbeam too) has no parallel impl for scan())
+        let mut poly_cum_sum_evals = evals.into_iter().scan(F::zero(), |acc, x| {
+            *acc += x;
+            Some(*acc)
+        }).collect::<Vec<_>>();
+
+        // Poly evals over domain should sum to zero
+        if poly_cum_sum_evals[poly_cum_sum_evals.len() - 1] != F::zero() {
+            Err(Error::InvalidCoboundaryPolynomial)?
+        }
+
+        z_evals.append(&mut poly_cum_sum_evals);
+        z_evals.pop(); // Pop the last zero
+
+        let z_evals = Evaluations::from_vec_and_domain(
+            z_evals,
+            domain,
+        );
+
+        let z_poly = z_evals.interpolate_by_ref();
+
+        Ok(Self {
+            poly: z_poly,
+            evals: z_evals
+        })
+    }
+
+    /// Compute the boundary polynomial given a coboundary
+    /// polynomial `poly` over a domain `domain`.
+    pub fn from_coboundary_polynomial(
+        poly:   &DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<Self, Error>
+    {
+        Self::from_coboundary_polynomial_evals(poly.evaluate_over_domain_by_ref(domain))
+    }
+
+    /// Given the domain evaluations `poly_evals` of a polynomial p(X) with non-zero
+    /// domain sum v = Sum_{x in D} p(x), construct a boundary polynomial Z(X) for the
+    /// centered polynomial p'(X) = p(X) - v/|D|, and return both Z(X) and v/|D|.
+    pub fn from_non_coboundary_polynomial_evals(
+        poly_evals: Evaluations<F>
+    ) -> Result<(Self, F), Error>
+    {
+        let v = poly_evals.evals.par_iter().sum::<F>();
+        let v_over_domain = v * poly_evals.domain.size_inv();
+        let normalized_poly_evals = Evaluations::from_vec_and_domain(
+            poly_evals.evals.into_par_iter().map(|eval| eval - v_over_domain).collect(),
+            poly_evals.domain
+        );
+        let boundary_poly = Self::from_coboundary_polynomial_evals(normalized_poly_evals)?;
+        Ok((boundary_poly, v_over_domain))
+    }
+
+    /// Given a polynomial `poly` with non-zero sum over `domain` v = Sum_{x in D} p(x),
+    /// construct a boundary polynomial Z(X) for the centered polynomial
+    /// p'(X) = p(X) - v/|D|, and return both Z(X) and v/|D|.
+    pub fn from_non_coboundary_polynomial(
+        poly:   &DensePolynomial<F>,
+        domain: Box<dyn EvaluationDomain<F>>
+    ) -> Result<(Self, F), Error> {
+        Self::from_non_coboundary_polynomial_evals(poly.evaluate_over_domain_by_ref(domain))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use algebra::fields::bn_382::fr::Fr;
+    use algebra::fields::tweedle::fr::Fr;
     use algebra::UniformRand;
     use algebra_utils::{DenseOrSparsePolynomial, DensePolynomial, get_best_evaluation_domain};
     use rand::thread_rng;
@@ -526,5 +663,39 @@ mod tests {
         );
 
         println!("{:?}", alternator_poly);
+    }
+
+    #[test]
+    fn test_coboundary_polynomial() {
+        let rng = &mut thread_rng();
+
+        for domain_size in 1..20 {
+            let domain = get_best_evaluation_domain::<Fr>(1 << domain_size).unwrap();
+            let size = domain.size();
+
+            // Get random poly
+            let p = DensePolynomial::<Fr>::rand(size, rng);
+
+            // Compute the boundary polynomial Z
+            let (z_poly, v) = BoundaryPolynomial::from_non_coboundary_polynomial(&p, domain.clone()).unwrap();
+            let z_evals = z_poly.evals();
+
+            // Compute the coboundary polynomial P'(X) = P(X) - v/|domain|
+            let mut p_coeffs = p.coeffs;
+            p_coeffs[0] -= v;
+            let p_prime = DensePolynomial::from_coefficients_vec(p_coeffs);
+
+            // Compute the evaluations of p_prime over domain
+            let p_prime_evals = p_prime.evaluate_over_domain(domain);
+
+            // Test that indeed Z is a boundary polynomial, e.g. :
+            // Z(g^i) - z(g^i-1) == p'(g^i) <=> Z(g*x) - Z(x) = p'(x) for each x in domain
+            for i in 1..size {
+                assert_eq!(
+                    z_evals[i] - z_evals[i - 1], p_prime_evals[i - 1],
+                    "{}", format!("Equality {} failed on domain size 2^{}", i, size)
+                );
+            }
+        }
     }
 }

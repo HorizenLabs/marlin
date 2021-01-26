@@ -35,6 +35,9 @@ digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }
 
 [dev-dependencies]
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bls12_381", "jubjub", "bn_382", "tweedle"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = [ "bn_382", "tweedle" ] }
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bn_382", "tweedle"]}
 blake2 = { version = "0.8", default-features = false }
 criterion = "0.3"
 rand_xorshift = "0.2"
@@ -77,12 +80,12 @@ opt-level = 3
 rpath = false
 lto = "thin"
 incremental = true
-debug-assertions = false
-debug = false
+debug-assertions = true
+debug = true
 
 [profile.test]
 opt-level = 3
 lto = "thin"
 incremental = true
-debug-assertions = false
-debug = false
+debug-assertions = true
+debug = true
