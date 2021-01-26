@@ -1,5 +1,5 @@
 use algebra::{
-    fields::bn_382::Fq as Fr,
+    fields::bn_382::{Fq, Fr},
     curves::bn_382::g::Affine,
     UniformRand, PrimeField
 };
@@ -17,7 +17,7 @@ use r1cs_std::eq::EqGadget;
 use r1cs_std::fields::FieldGadget;
 use r1cs_std::alloc::AllocGadget;
 
-use primitives::crh::poseidon::BN382FqPoseidonHash;
+use primitives::crh::poseidon::BN382FrPoseidonSponge;
 
 use rand::{
     rngs::OsRng, thread_rng
@@ -31,8 +31,8 @@ extern crate criterion;
 #[macro_use]
 extern crate bench_utils;
 
-type IPAPC = InnerProductArgPC<Affine, Blake2s>;
-type MarlinInst = Marlin<Fr, IPAPC, BN382FqPoseidonHash>;
+type IPAPC = InnerProductArgPC<Fr, Affine, BN382FrPoseidonSponge>;
+type MarlinInst = Marlin<Affine, IPAPC, BN382FrPoseidonSponge, MarlinDefaultConfig>;
 
 #[derive(Clone)]
 pub struct TestCircuit1a<F: PrimeField> {
@@ -524,8 +524,8 @@ fn bench_prover_circuit1a(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit1a::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit1a::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -541,8 +541,8 @@ fn bench_prover_circuit1a(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {
@@ -574,8 +574,8 @@ fn bench_prover_circuit1b(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit1b::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit1b::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -591,8 +591,8 @@ fn bench_prover_circuit1b(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {
@@ -625,8 +625,8 @@ fn bench_prover_circuit1c(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit1c::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit1c::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -642,8 +642,8 @@ fn bench_prover_circuit1c(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {
@@ -676,8 +676,8 @@ fn bench_prover_circuit2a(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit2a::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit2a::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -693,8 +693,8 @@ fn bench_prover_circuit2a(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {
@@ -727,8 +727,8 @@ fn bench_prover_circuit2b(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit2b::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit2b::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -744,8 +744,8 @@ fn bench_prover_circuit2b(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {
@@ -778,8 +778,8 @@ fn bench_prover_circuit2c(c: &mut Criterion){
 
     for &num_constraints in num_constraints.iter()
         {
-            let universal_srs = MarlinInst::universal_setup(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
-            let c = TestCircuit2c::<Fr>{ num_constraints, a: None, b: None };
+            let universal_srs = MarlinInst::universal_setup::<_, Blake2s>(num_constraints, num_constraints, num_constraints, &mut rng).unwrap();
+            let c = TestCircuit2c::<Fq>{ num_constraints, a: None, b: None };
 
             let (index_pk, _) = MarlinInst::index(
                 &universal_srs,
@@ -795,8 +795,8 @@ fn bench_prover_circuit2c(c: &mut Criterion){
                 bn.iter_batched(
                     || {
                         let mut rng = OsRng::default();
-                        let a = Fr::rand(&mut rng);
-                        let b = Fr::rand(&mut rng);
+                        let a = Fq::rand(&mut rng);
+                        let b = Fq::rand(&mut rng);
                         (a, b)
                     },
                     |(a, b)| {

@@ -17,9 +17,7 @@
 #[macro_use]
 extern crate bench_utils;
 
-use algebra::{
-    PrimeField, ToConstraintField, ToBytes, to_bytes
-};
+use algebra::{Field, ToConstraintField, ToBytes, to_bytes, AffineCurve};
 use std::marker::PhantomData;
 use poly_commit::{Evaluations, LabeledPolynomial};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
@@ -74,39 +72,36 @@ impl MarlinConfig for MarlinRecursiveConfig {
 
 /// The compiled argument system.
 pub struct Marlin<
-    F: PrimeField,
-    ConstraintF: PrimeField,
-    PC: PolynomialCommitment<F>,
-    FS: FiatShamirRng<F, ConstraintF>,
+    G: AffineCurve,
+    PC: PolynomialCommitment<G, RandomOracle = FS>,
+    FS: FiatShamirRng<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
     MC: MarlinConfig,
 >(
-    #[doc(hidden)] PhantomData<F>,
-    #[doc(hidden)] PhantomData<ConstraintF>,
+    #[doc(hidden)] PhantomData<G>,
     #[doc(hidden)] PhantomData<PC>,
     #[doc(hidden)] PhantomData<FS>,
     #[doc(hidden)] PhantomData<MC>,
 );
 
-
-fn compute_vk_hash<F, ConstraintF, PC, FS>(vk: &IndexVerifierKey<F, PC>) -> Vec<ConstraintF>
+fn compute_vk_hash<G, PC, FS>(vk: &IndexVerifierKey<G, PC>) -> Vec<<G::BaseField as Field>::BasePrimeField>
     where
-        F: PrimeField,
-        ConstraintF: PrimeField,
-        PC: PolynomialCommitment<F>,
-        FS: FiatShamirRng<F, ConstraintF>,
-        PC::Commitment: ToConstraintField<ConstraintF>,
+        G: AffineCurve,
+        FS: FiatShamirRng<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+        PC: PolynomialCommitment<G, RandomOracle = FS>,
+        PC::Commitment: ToConstraintField<<G::BaseField as Field>::BasePrimeField>,
 {
     let mut vk_hash_rng = FS::new();
     vk_hash_rng.absorb_native_field_elements(&vk.index_comms);
     vk_hash_rng.squeeze_native_field_elements(1)
 }
 
-impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F, ConstraintF, PC, FS, MC>
+impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
     where
-        PC: PolynomialCommitment<F>,
-        PC::VerifierKey: ToConstraintField<ConstraintF>,
-        PC::Commitment: ToConstraintField<ConstraintF>,
-        FS: FiatShamirRng<F, ConstraintF>,
+        PC: PolynomialCommitment<G, RandomOracle = FS>,
+        PC::VerifierKey: ToConstraintField<<G::BaseField as Field>::BasePrimeField>,
+        PC::Commitment: ToConstraintField<<G::BaseField as Field>::BasePrimeField>,
+        FS: FiatShamirRng<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+        MC: MarlinConfig,
 {
     /// The personalization string for this protocol. Used to personalize the
     /// Fiat-Shamir rng.
@@ -119,8 +114,8 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         num_variables: usize,
         num_non_zero: usize,
         rng: &mut R,
-    ) -> Result<UniversalSRS<F, PC>, Error<PC::Error>> {
-        let max_degree = AHPForR1CS::<F>::max_degree(num_constraints, num_variables, num_non_zero)?;
+    ) -> Result<UniversalSRS<G, PC>, Error<PC::Error>> {
+        let max_degree = AHPForR1CS::<G::ScalarField>::max_degree(num_constraints, num_variables, num_non_zero)?;
         let setup_time = start_timer!(|| {
             format!(
             "Marlin::UniversalSetup with max_degree {}, computed for a maximum of {} constraints, {} vars, {} non_zero",
@@ -135,10 +130,10 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
 
     /// Generate the index-specific (i.e., circuit-specific) prover and verifier
     /// keys. This is a deterministic algorithm that anyone can rerun.
-    pub fn index<C: ConstraintSynthesizer<F>>(
-        srs: &UniversalSRS<F, PC>,
+    pub fn index<C: ConstraintSynthesizer<G::ScalarField>>(
+        srs: &UniversalSRS<G, PC>,
         c: C,
-    ) -> Result<(IndexProverKey<F, PC>, IndexVerifierKey<F, PC>), Error<PC::Error>> {
+    ) -> Result<(IndexProverKey<G, PC>, IndexVerifierKey<G, PC>), Error<PC::Error>> {
         let index_time = start_timer!(|| "Marlin::Index");
 
         // TODO: Add check that c is in the correct mode.
@@ -159,10 +154,14 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
             ).map_err(Error::from_pc_err)?;
 
         let mut vanishing_polys = vec![];
+
         if MC::FOR_RECURSION {
-            let domain_h = get_best_evaluation_domain::<F>(index.index_info.num_constraints)
+            // To avoid the verifier circuit evaluate these polynomials in non-native field,
+            // they are committed and their evaluations at the challenge points is checked
+            // via the opening proof (they are very cheap to commit and open anyway)
+            let domain_h = get_best_evaluation_domain::<G::ScalarField>(index.index_info.num_constraints)
                 .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-            let domain_k = get_best_evaluation_domain::<F>(index.index_info.num_non_zero)
+            let domain_k = get_best_evaluation_domain::<G::ScalarField>(index.index_info.num_non_zero)
                 .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
             vanishing_polys = vec![
@@ -213,11 +212,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
     }
 
     /// Create a zkSNARK asserting that the constraint system is satisfied.
-    pub fn prove<C: ConstraintSynthesizer<F>, R: RngCore>(
-        index_pk: &IndexProverKey<F, PC>,
+    pub fn prove<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
+        index_pk: &IndexProverKey<G, PC>,
         c: C,
         zk_rng: &mut R,
-    ) -> Result<Proof<F, PC>, Error<PC::Error>> {
+    ) -> Result<Proof<G, PC>, Error<PC::Error>> {
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
 
@@ -227,18 +226,12 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         let public_input = prover_init_state.public_input();
 
         let mut fs_rng = FS::new();
-
-        if for_recursion {
-            fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
-            fs_rng.absorb_native_field_elements(&compute_vk_hash::<F, ConstraintF, PC, FS>(
-                &index_pk.index_vk,
-            ));
-            fs_rng.absorb_nonnative_field_elements(&public_input);
-        } else {
-            fs_rng.absorb_bytes(
-                &to_bytes![&Self::PROTOCOL_NAME, &index_pk.index_vk, &public_input].unwrap(),
-            );
-        }
+        
+        fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
+        fs_rng.absorb_native_field_elements(&compute_vk_hash::<G, PC, FS>(
+            &index_pk.index_vk,
+        ));
+        fs_rng.absorb_nonnative_field_elements(&public_input);
 
         // --------------------------------------------------------------------
         // First round
@@ -254,15 +247,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(first_round_comm_time);
-
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&first_comms);
-            match prover_first_msg.clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            }
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![first_comms, prover_first_msg].unwrap());
+        
+        fs_rng.absorb_native_field_elements(&first_comms);
+        match prover_first_msg.clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
         }
 
         let (verifier_first_msg, verifier_state) =
@@ -284,14 +273,10 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         .map_err(Error::from_pc_err)?;
         end_timer!(second_round_comm_time);
 
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&second_comms);
-            match prover_second_msg.clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            }
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![second_comms, prover_second_msg].unwrap());
+        fs_rng.absorb_native_field_elements(&second_comms);
+        match prover_second_msg.clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
         }
 
         let (verifier_second_msg, verifier_state) =
@@ -312,23 +297,19 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         .map_err(Error::from_pc_err)?;
         end_timer!(third_round_comm_time);
 
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&third_comms);
-            match prover_third_msg.clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            }
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![third_comms, prover_third_msg].unwrap());
+        fs_rng.absorb_native_field_elements(&third_comms);
+        match prover_third_msg.clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
         }
 
         let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
         // --------------------------------------------------------------------
 
         let vanishing_polys = if for_recursion {
-            let domain_h = get_best_evaluation_domain::<F>(index_pk.index.index_info.num_constraints)
+            let domain_h = get_best_evaluation_domain::<G::ScalarField>(index_pk.index.index_info.num_constraints)
                 .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-            let domain_k = get_best_evaluation_domain::<F>(index_pk.index.index_info.num_non_zero)
+            let domain_k = get_best_evaluation_domain::<G::ScalarField>(index_pk.index.index_info.num_non_zero)
                 .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
 
             vec![
@@ -368,11 +349,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         ];
 
         let indexer_polynomials = if for_recursion {
-            AHPForR1CS::<F>::INDEXER_POLYNOMIALS_WITH_VANISHING
+            AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS_WITH_VANISHING
                 .clone()
                 .to_vec()
         } else {
-            AHPForR1CS::<F>::INDEXER_POLYNOMIALS.clone().to_vec()
+            AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS.clone().to_vec()
         };
 
         let labeled_comms: Vec<_> = index_pk
@@ -414,24 +395,20 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
                 .find(|lc| &lc.label == label)
                 .ok_or(ahp::Error::MissingEval(label.to_string()))?;
             let eval = polynomials.get_lc_eval(&lc, *point)?;
-            if !AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
+            if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
                 evaluations.push((label.to_string(), eval));
             }
         }
         evaluations.sort_by(|a, b| a.0.cmp(&b.0));
-        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<F>>();
+        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<G::ScalarField>>();
         end_timer!(eval_time);
-
-        if for_recursion {
-            fs_rng.absorb_nonnative_field_elements(&evaluations);
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![&evaluations].unwrap());
-        }
+        
+        fs_rng.absorb_nonnative_field_elements(&evaluations);
 
         let pc_proof = if for_recursion {
             let num_open_challenges: usize = polynomials.len();
 
-            let mut opening_challenges = Vec::<F>::new();
+            let mut opening_challenges = Vec::<G::ScalarField>::new();
             opening_challenges
                 .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
 
@@ -446,10 +423,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
                 &opening_challenges_f,
                 &comm_rands,
                 Some(zk_rng),
+                &mut fs_rng
             )
                 .map_err(Error::from_pc_err)?
         } else {
-            let opening_challenge: F = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
+            let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
             PC::open_combinations(
                 &index_pk.committer_key,
@@ -460,6 +438,7 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
                 opening_challenge,
                 &comm_rands,
                 Some(zk_rng),
+                &mut fs_rng
             )
                 .map_err(Error::from_pc_err)?
         };
@@ -476,9 +455,9 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
     /// Verify that a proof for the constrain system defined by `C` asserts that
     /// all constraints are satisfied.
     pub fn verify<R: RngCore>(
-        index_vk: &IndexVerifierKey<F, PC>,
-        public_input: &[F],
-        proof: &Proof<F, PC>,
+        index_vk: &IndexVerifierKey<G, PC>,
+        public_input: &[G::ScalarField],
+        proof: &Proof<G, PC>,
         rng: &mut R,
     ) -> Result<bool, Error<PC::Error>> {
         let verifier_time = start_timer!(|| "Marlin::Verify");
@@ -486,41 +465,32 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         let for_recursion = MC::FOR_RECURSION;
 
         let public_input = {
-            let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
+            let domain_x = get_best_evaluation_domain::<G::ScalarField>(public_input.len() + 1).unwrap();
 
             let mut unpadded_input = public_input.to_vec();
             unpadded_input.resize(
                 std::cmp::max(public_input.len(), domain_x.size() - 1),
-                F::zero(),
+                G::ScalarField::zero(),
             );
 
             unpadded_input
         };
 
         let mut fs_rng = FS::new();
-
-        if for_recursion {
-            fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
-            fs_rng.absorb_native_field_elements(&compute_vk_hash::<F, ConstraintF, PC, FS>(index_vk));
-            fs_rng.absorb_nonnative_field_elements(&public_input);
-        } else {
-            fs_rng
-                .absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME, &index_vk, &public_input].unwrap());
-        }
+        
+        fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
+        fs_rng.absorb_native_field_elements(&compute_vk_hash::<G, PC, FS>(index_vk));
+        fs_rng.absorb_nonnative_field_elements(&public_input);
 
         // --------------------------------------------------------------------
         // First round
 
         let first_comms = &proof.commitments[0];
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&first_comms);
-            match proof.prover_messages[0].clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            };
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![first_comms, proof.prover_messages[0]].unwrap());
-        }
+        fs_rng.absorb_native_field_elements(&first_comms);
+        match proof.prover_messages[0].clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
+        };
 
         let (_, verifier_state) =
             AHPForR1CS::verifier_first_round(index_vk.index_info, &mut fs_rng)?;
@@ -529,15 +499,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         // --------------------------------------------------------------------
         // Second round
         let second_comms = &proof.commitments[1];
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&second_comms);
-            match proof.prover_messages[1].clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            };
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![second_comms, proof.prover_messages[1]].unwrap());
-        }
+        fs_rng.absorb_native_field_elements(&second_comms);
+        match proof.prover_messages[1].clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
+        };
 
         let (_, verifier_state) = AHPForR1CS::verifier_second_round(verifier_state, &mut fs_rng);
         // --------------------------------------------------------------------
@@ -545,15 +511,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         // --------------------------------------------------------------------
         // Third round
         let third_comms = &proof.commitments[2];
-        if for_recursion {
-            fs_rng.absorb_native_field_elements(&third_comms);
-            match proof.prover_messages[2].clone() {
-                ProverMsg::EmptyMessage => (),
-                ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
-            };
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![third_comms, proof.prover_messages[2]].unwrap());
-        }
+        fs_rng.absorb_native_field_elements(&third_comms);
+        match proof.prover_messages[2].clone() {
+            ProverMsg::EmptyMessage => (),
+            ProverMsg::FieldElements(v) => fs_rng.absorb_nonnative_field_elements(&v),
+        };
 
         let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
         // --------------------------------------------------------------------
@@ -570,9 +532,9 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
             .collect::<Vec<_>>();
 
         let polynomial_labels: Vec<String> = if for_recursion {
-            AHPForR1CS::<F>::polynomial_labels_with_vanishing().collect()
+            AHPForR1CS::<G::ScalarField>::polynomial_labels_with_vanishing().collect()
         } else {
-            AHPForR1CS::<F>::polynomial_labels().collect()
+            AHPForR1CS::<G::ScalarField>::polynomial_labels().collect()
         };
 
         // Gather commitments in one vector.
@@ -590,17 +552,13 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         let (query_set, verifier_state) =
             AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng, for_recursion);
 
-        if for_recursion {
-            fs_rng.absorb_nonnative_field_elements(&proof.evaluations);
-        } else {
-            fs_rng.absorb_bytes(&to_bytes![&proof.evaluations].unwrap());
-        }
+        fs_rng.absorb_nonnative_field_elements(&proof.evaluations);
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
         for (poly_label, (_, point)) in query_set.iter().cloned() {
-            if AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
-                evaluations.insert((poly_label, point), F::zero());
+            if AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
+                evaluations.insert((poly_label, point), G::ScalarField::zero());
             } else {
                 evaluation_labels.push((poly_label, point));
             }
@@ -621,7 +579,7 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
         let evaluations_are_correct = if for_recursion {
             let num_open_challenges: usize = commitments.len();
 
-            let mut opening_challenges = Vec::<F>::new();
+            let mut opening_challenges = Vec::<G::ScalarField>::new();
             opening_challenges
                 .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
 
@@ -635,10 +593,11 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
                 &proof.pc_proof,
                 &opening_challenges_f,
                 rng,
+                &mut fs_rng
             )
                 .map_err(Error::from_pc_err)?
         } else {
-            let opening_challenge: F = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
+            let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
             PC::check_combinations(
                 &index_vk.verifier_key,
@@ -649,6 +608,7 @@ impl<F: PrimeField, ConstraintF: PrimeField, PC, FS, MC: MarlinConfig> Marlin<F,
                 &proof.pc_proof,
                 opening_challenge,
                 rng,
+                &mut fs_rng
             )
                 .map_err(Error::from_pc_err)?
         };

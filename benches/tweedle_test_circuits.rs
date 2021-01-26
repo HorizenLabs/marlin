@@ -1,4 +1,4 @@
-use algebra::{
+/*use algebra::{
     fields::tweedle::Fr,
     curves::tweedle::dee::Affine,
     UniformRand,
@@ -32,7 +32,7 @@ extern crate criterion;
 #[macro_use]
 extern crate bench_utils;
 
-type IPAPC = InnerProductArgPC<Affine, Blake2s>;
+type IPAPC = InnerProductArgPC<Fr, Affine, Blake2s>;
 type MarlinInst = Marlin<Fr, IPAPC, BN382FrPoseidonHash>;
 
 #[derive(Clone)]
@@ -828,4 +828,4 @@ targets = bench_prover_circuit1a, bench_prover_circuit1b, bench_prover_circuit1c
           bench_prover_circuit2a, bench_prover_circuit2b, bench_prover_circuit2c,
 );
 
-criterion_main!(tweedle_test_circuits);
+criterion_main!(tweedle_test_circuits);*/

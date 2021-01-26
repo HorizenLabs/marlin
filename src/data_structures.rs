@@ -1,7 +1,7 @@
 use crate::ahp::indexer::*;
 use crate::ahp::prover::ProverMsg;
 use crate::Vec;
-use algebra::PrimeField;
+use algebra::{Field, PrimeField, AffineCurve};
 use poly_commit::{BatchLCProof, PolynomialCommitment};
 
 /* ************************************************************************* */
@@ -9,26 +9,26 @@ use poly_commit::{BatchLCProof, PolynomialCommitment};
 /* ************************************************************************* */
 
 /// The universal public parameters for the argument system.
-pub type UniversalSRS<F, PC> = <PC as PolynomialCommitment<F>>::UniversalParams;
+pub type UniversalSRS<G, PC> = <PC as PolynomialCommitment<G>>::UniversalParams;
 
 /* ************************************************************************* */
 /* ************************************************************************* */
 /* ************************************************************************* */
 
 /// Verification key for a specific index (i.e., R1CS matrices).
-pub struct IndexVerifierKey<F: PrimeField, PC: PolynomialCommitment<F>>
+pub struct IndexVerifierKey<G: AffineCurve, PC: PolynomialCommitment<G>>
 {
     /// Stores information about the size of the index, as well as its field of
     /// definition.
-    pub index_info: IndexInfo<F>,
+    pub index_info: IndexInfo<G::ScalarField>,
     /// Commitments to the indexed polynomials.
     pub index_comms: Vec<PC::Commitment>,
     /// The verifier key for this index, trimmed from the universal SRS.
     pub verifier_key: PC::VerifierKey,
 }
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>> algebra::ToBytes
-    for IndexVerifierKey<F, PC>
+impl<G: AffineCurve, PC: PolynomialCommitment<G>> algebra::ToBytes
+    for IndexVerifierKey<G, PC>
 {
     fn write<W: std::io::Write>(&self, mut w: W) -> std::io::Result<()> {
         self.index_info.write(&mut w)?;
@@ -36,8 +36,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> algebra::ToBytes
     }
 }
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>> Clone
-    for IndexVerifierKey<F, PC>
+impl<G: AffineCurve, PC: PolynomialCommitment<G>> Clone
+    for IndexVerifierKey<G, PC>
 {
     fn clone(&self) -> Self {
         Self {
@@ -48,8 +48,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Clone
     }
 }
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>>
-    IndexVerifierKey<F, PC>
+impl<G: AffineCurve, PC: PolynomialCommitment<G>>
+    IndexVerifierKey<G, PC>
 {
     /// Iterate over the commitments to indexed polynomials in `self`.
     pub fn iter(&self) -> impl Iterator<Item = &PC::Commitment> {
@@ -63,21 +63,21 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>>
 
 /// Proving key for a specific index (i.e., R1CS matrices).
 pub struct IndexProverKey<
-    F: PrimeField,
-    PC: PolynomialCommitment<F>,
+    G: AffineCurve,
+    PC: PolynomialCommitment<G>,
 > {
     /// The index verifier key.
-    pub index_vk: IndexVerifierKey<F, PC>,
+    pub index_vk: IndexVerifierKey<G, PC>,
     /// The randomness for the index polynomial commitments.
     pub index_comm_rands: Vec<PC::Randomness>,
     /// The index itself.
-    pub index: Index<F>,
+    pub index: Index<G::ScalarField>,
     /// The committer key for this index, trimmed from the universal SRS.
     pub committer_key: PC::CommitterKey,
 }
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>> Clone
-    for IndexProverKey<F, PC>
+impl<G: AffineCurve, PC: PolynomialCommitment<G>> Clone
+    for IndexProverKey<G, PC>
 where
     PC::Commitment: Clone,
 {
@@ -96,24 +96,24 @@ where
 /* ************************************************************************* */
 
 /// A zkSNARK proof.
-pub struct Proof<F: PrimeField, PC: PolynomialCommitment<F>> {
+pub struct Proof<G: AffineCurve, PC: PolynomialCommitment<G>> {
     /// Commitments to the polynomials produced by the AHP prover.
     pub commitments: Vec<Vec<PC::Commitment>>,
     /// Evaluations of these polynomials.
-    pub evaluations: Vec<F>,
+    pub evaluations: Vec<G::ScalarField>,
     /// The field elements sent by the prover.
-    pub prover_messages: Vec<ProverMsg<F>>,
+    pub prover_messages: Vec<ProverMsg<G::ScalarField>>,
     /// An evaluation proof from the polynomial commitment.
-    pub pc_proof: BatchLCProof<F, PC>,
+    pub pc_proof: BatchLCProof<G, PC>,
 }
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
+impl<G: AffineCurve, PC: PolynomialCommitment<G>> Proof<G, PC> {
     /// Construct a new proof.
     pub fn new(
         commitments: Vec<Vec<PC::Commitment>>,
-        evaluations: Vec<F>,
-        prover_messages: Vec<ProverMsg<F>>,
-        pc_proof: BatchLCProof<F, PC>,
+        evaluations: Vec<G::ScalarField>,
+        prover_messages: Vec<ProverMsg<G::ScalarField>>,
+        pc_proof: BatchLCProof<G, PC>,
     ) -> Self {
         Self {
             commitments,
@@ -127,7 +127,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
     pub fn print_size_info(&self) {
         use poly_commit::{PCCommitment, PCProof};
 
-        let size_of_fe_in_bytes = F::zero().into_repr().as_ref().len() * 8;
+        let size_of_fe_in_bytes = G::ScalarField::zero().into_repr().as_ref().len() * 8;
         let mut num_comms_without_degree_bounds = 0;
         let mut num_comms_with_degree_bounds = 0;
         let mut size_bytes_comms_without_degree_bounds = 0;
