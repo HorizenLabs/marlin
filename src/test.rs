@@ -188,4 +188,13 @@ mod marlin {
 
         test_circuit(num_constraints, num_variables);
     }
+
+    #[test]
+    // See https://github.com/HorizenLabs/marlin/issues/3 for the rationale behind this test
+    fn prove_and_verify_with_trivial_index_polynomials() {
+        let num_constraints = 1 << 6;
+        let num_variables = 1 << 4;
+
+        test_circuit(num_constraints, num_variables);
+    }
 }
