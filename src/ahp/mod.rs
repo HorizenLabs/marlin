@@ -158,8 +158,9 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         // Outer sumcheck:
         let z_b = LinearCombination::new("z_b", vec![(F::one(), "z_b")]);
-        let z_1 = LinearCombination::new("z_1", vec![(F::one(), "z_1")]);
         let t = LinearCombination::new("t", vec![(F::one(), "t")]);
+        let z_1_beta = LinearCombination::new("z_1_beta", vec![(F::one(), "z_1")]);
+        let z_1_g_beta = LinearCombination::new("z_1_g_beta", vec![(F::one(), "z_1")]);
 
         let r_alpha_at_beta = domain_h.eval_unnormalized_bivariate_lagrange_poly(alpha, beta);
         let v_H_at_alpha = domain_h.evaluate_vanishing_polynomial(alpha);
@@ -168,8 +169,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let z_b_at_beta = evals.get_lc_eval(&z_b, beta)?;
         let t_at_beta = evals.get_lc_eval(&t, beta)?;
-        let z_1_at_beta = evals.get_lc_eval(&z_1, beta)?;
-        let z_1_at_g_beta = evals.get_lc_eval(&z_1, g_h * beta)?;
+        let z_1_at_beta = evals.get_lc_eval(&z_1_beta, beta)?;
+        let z_1_at_g_beta = evals.get_lc_eval(&z_1_g_beta, g_h * beta)?;
 
         let x_at_beta = x_domain
             .evaluate_all_lagrange_coefficients(beta)
@@ -197,13 +198,13 @@ impl<F: PrimeField> AHPForR1CS<F> {
         debug_assert!(evals.get_lc_eval(&outer_sumcheck, beta)?.is_zero());
 
         linear_combinations.push(z_b);
-        linear_combinations.push(z_1);
+        linear_combinations.push(z_1_beta);
+        linear_combinations.push(z_1_g_beta);
         linear_combinations.push(t);
         linear_combinations.push(outer_sumcheck);
 
         //  Inner sumcheck:
         let beta_alpha = beta * alpha;
-        let z_2 = LinearCombination::new("z_2", vec![(F::one(), "z_2")]);
 
         let a_denom = LinearCombination::new(
             "a_denom",
@@ -238,8 +239,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let a_denom_at_gamma = evals.get_lc_eval(&a_denom, gamma)?;
         let b_denom_at_gamma = evals.get_lc_eval(&b_denom, gamma)?;
         let c_denom_at_gamma = evals.get_lc_eval(&c_denom, gamma)?;
-        let z_2_at_gamma = evals.get_lc_eval(&z_2, gamma)?;
-        let z_2_at_g_gamma = evals.get_lc_eval(&z_2, g_k * gamma)?;
+        let z_2_gamma = LinearCombination::new("z_2_gamma", vec![(F::one(), "z_2")]);
+        let z_2_g_gamma = LinearCombination::new("z_2_g_gamma", vec![(F::one(), "z_2")]);
+        let z_2_at_gamma = evals.get_lc_eval(&z_2_gamma, gamma)?;
+        let z_2_at_g_gamma = evals.get_lc_eval(&z_2_g_gamma, g_k * gamma)?;
 
         let v_K_at_gamma = domain_k.evaluate_vanishing_polynomial(gamma);
 
@@ -263,7 +266,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let inner_sumcheck = a;
         debug_assert!(evals.get_lc_eval(&inner_sumcheck, gamma)?.is_zero());
 
-        linear_combinations.push(z_2);
+        linear_combinations.push(z_2_gamma);
+        linear_combinations.push(z_2_g_gamma);
         linear_combinations.push(a_denom);
         linear_combinations.push(b_denom);
         linear_combinations.push(c_denom);

@@ -131,8 +131,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // Outer sumcheck test:
         //   r(alpha, beta) * (sum_M eta_M z_M(beta)) - t(beta) * z(beta)
         // = z_1(g_H * beta) - z_1(beta) + h_1(beta) * v_H(beta)
-        query_set.insert(("z_1".into(), ("beta".into(), beta)));
-        query_set.insert(("z_1".into(), ("g * beta".into(), g_h * beta)));
+        query_set.insert(("z_1_beta".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1_g_beta".into(), ("g * beta".into(), g_h * beta)));
         query_set.insert(("z_b".into(), ("beta".into(), beta)));
         query_set.insert(("t".into(), ("beta".into(), beta)));
         query_set.insert(("outer_sumcheck".into(), ("beta".into(), beta)));
@@ -145,8 +145,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // where
         //   a(X) := sum_M (eta_M v_H(beta) v_H(alpha) val_M(X) prod_N (beta - row_N(X)) (alpha - col_N(X)))
         //   b(X) := prod_M (beta - row_M(X)) (alpha - col_M(X))
-        query_set.insert(("z_2".into(), ("gamma".into(), gamma)));
-        query_set.insert(("z_2".into(), ("g * gamma".into(), g_k * gamma)));
+        query_set.insert(("z_2_gamma".into(), ("gamma".into(), gamma)));
+        query_set.insert(("z_2_g_gamma".into(), ("g * gamma".into(), g_k * gamma)));
         query_set.insert(("a_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("b_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("c_denom".into(), ("gamma".into(), gamma)));

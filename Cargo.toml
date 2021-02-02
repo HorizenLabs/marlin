@@ -19,12 +19,12 @@ license = "MIT/Apache-2.0"
 edition = "2018"
 
 [dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
-algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
-primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bn_382"]}
-bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge"}
-r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge"}
-r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bn_382", "tweedle"]}
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
+primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bn_382"]}
+bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative"}
+r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative"}
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["nonnative", "density-optimized", "bn_382", "tweedle"]}
 
 poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "full_verifier" }
 
@@ -35,9 +35,9 @@ digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }
 
 [dev-dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bls12_381", "jubjub", "bn_382", "tweedle"]}
-algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = [ "bn_382", "tweedle" ] }
-r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "poseidon_sponge", features = ["bn_382", "tweedle"]}
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bls12_381", "jubjub", "bn_382", "tweedle"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "bn_382", "tweedle" ] }
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bn_382", "tweedle"]}
 blake2 = { version = "0.8", default-features = false }
 criterion = "0.3"
 rand_xorshift = "0.2"

@@ -2,7 +2,9 @@ use crate::ahp::indexer::*;
 use crate::ahp::prover::ProverMsg;
 use crate::Vec;
 use algebra::{Field, PrimeField, AffineCurve};
-use poly_commit::{BatchLCProof, PolynomialCommitment};
+use algebra_utils::get_best_evaluation_domain;
+use poly_commit::{BatchLCProof, PolynomialCommitment, PCPreparedCommitment, PCPreparedVerifierKey};
+use r1cs_core::SynthesisError;
 
 /* ************************************************************************* */
 /* ************************************************************************* */
@@ -54,6 +56,76 @@ impl<G: AffineCurve, PC: PolynomialCommitment<G>>
     /// Iterate over the commitments to indexed polynomials in `self`.
     pub fn iter(&self) -> impl Iterator<Item = &PC::Commitment> {
         self.index_comms.iter()
+    }
+}
+
+/* ************************************************************************* */
+/* ************************************************************************* */
+/* ************************************************************************* */
+
+/// Verification key, prepared (preprocessed) for use in pairings.
+pub struct PreparedIndexVerifierKey<G: AffineCurve, PC: PolynomialCommitment<G>>
+{
+    /// Size of the variable domain.
+    pub domain_h_size: u64,
+    /// Size of the matrix domain.
+    pub domain_k_size: u64,
+    /// Commitments to the index polynomials, prepared.
+    pub prepared_index_comms: Vec<PC::PreparedCommitment>,
+    /// Prepared version of the poly-commit scheme's verification key.
+    pub prepared_verifier_key: PC::PreparedVerifierKey,
+    /// Non-prepared verification key, for use in native "prepared verify" (which
+    /// is actually standard verify), as well as in absorbing the original vk into
+    /// the Fiat-Shamir sponge.
+    pub orig_vk: IndexVerifierKey<G, PC>,
+}
+
+impl<G, PC> Clone for PreparedIndexVerifierKey<G, PC>
+    where
+        G: AffineCurve,
+        PC: PolynomialCommitment<G>,
+{
+    fn clone(&self) -> Self {
+        PreparedIndexVerifierKey {
+            domain_h_size: self.domain_h_size,
+            domain_k_size: self.domain_k_size,
+            prepared_index_comms: self.prepared_index_comms.clone(),
+            prepared_verifier_key: self.prepared_verifier_key.clone(),
+            orig_vk: self.orig_vk.clone(),
+        }
+    }
+}
+
+impl<G, PC> PreparedIndexVerifierKey<G, PC>
+    where
+        G: AffineCurve,
+        PC: PolynomialCommitment<G>,
+{
+    pub fn prepare(vk: &IndexVerifierKey<G, PC>) -> Self {
+        let mut prepared_index_comms = Vec::<PC::PreparedCommitment>::new();
+        for (_, comm) in vk.index_comms.iter().enumerate() {
+            prepared_index_comms.push(PC::PreparedCommitment::prepare(comm));
+        }
+
+        let prepared_verifier_key = PC::PreparedVerifierKey::prepare(&vk.verifier_key);
+
+        let domain_h = get_best_evaluation_domain::<G::ScalarField>(vk.index_info.num_constraints)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)
+            .unwrap();
+        let domain_k = get_best_evaluation_domain::<G::ScalarField>(vk.index_info.num_non_zero)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)
+            .unwrap();
+
+        let domain_h_size = domain_h.size();
+        let domain_k_size = domain_k.size();
+
+        Self {
+            domain_h_size: domain_h_size as u64,
+            domain_k_size: domain_k_size as u64,
+            prepared_index_comms,
+            prepared_verifier_key,
+            orig_vk: vk.clone(),
+        }
     }
 }
 
