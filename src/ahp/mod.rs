@@ -2,7 +2,7 @@ use crate::{String, ToString, Vec};
 use algebra::{Field, PrimeField};
 use std::{borrow::Borrow, marker::PhantomData};
 use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, DensePolynomial, Evaluations};
-use poly_commit::{LCTerm, LabeledPolynomial, LinearCombination};
+use poly_commit::{LCTerm, LabeledPolynomial, LinearCombination, PolynomialLabel};
 use r1cs_core::SynthesisError;
 
 use rayon::prelude::*;
@@ -125,7 +125,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
         public_input: &[F],
         evals: &E,
         state: &verifier::VerifierState<F>,
-        with_vanishing: bool,
     ) -> Result<Vec<LinearCombination<F>>, Error>
     where
         E: EvaluationsProvider<F>,
@@ -273,27 +272,140 @@ impl<F: PrimeField> AHPForR1CS<F> {
         linear_combinations.push(c_denom);
         linear_combinations.push(inner_sumcheck);
 
-        if with_vanishing {
-            let vanishing_poly_h_alpha = LinearCombination::new(
-                "vanishing_poly_h_alpha",
-                vec![(F::one(), "vanishing_poly_h")],
-            );
-            let vanishing_poly_h_beta = LinearCombination::new(
-                "vanishing_poly_h_beta",
-                vec![(F::one(), "vanishing_poly_h")],
-            );
-            let vanishing_poly_k_gamma = LinearCombination::new(
-                "vanishing_poly_k_gamma",
-                vec![(F::one(), "vanishing_poly_k")],
-            );
-
-            linear_combinations.push(vanishing_poly_h_alpha);
-            linear_combinations.push(vanishing_poly_h_beta);
-            linear_combinations.push(vanishing_poly_k_gamma);
-        }
-
         linear_combinations.sort_by(|a, b| a.label.cmp(&b.label));
         Ok(linear_combinations)
+    }
+
+    /// Does the algebraic checks on the opening values (inner and outer sumcheck).
+    /// To complete Marlin verification, one still has to check the opening proofs.
+    #[allow(non_snake_case)]
+    pub fn verify_sumchecks<E>(
+        public_input: &[F],
+        evals: &E,
+        state: &verifier::VerifierState<F>,
+    ) -> Result<(), Error>
+        where
+            E: EvaluationsProvider<F>,
+    {
+        let domain_h = &state.domain_h;
+        let g_h = domain_h.group_gen();
+
+        let domain_k = &state.domain_k;
+        let g_k = domain_k.group_gen();
+        let k_size = domain_k.size_as_field_element();
+
+        let public_input =
+            constraint_systems::ProverConstraintSystem::format_public_input(public_input);
+        if !Self::formatted_public_input_is_admissible(&public_input) {
+            Err(Error::InvalidPublicInputLength)?
+        }
+        let x_domain = get_best_evaluation_domain::<F>(public_input.len())
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+
+        let first_round_msg = state.first_round_msg.unwrap();
+        let alpha = first_round_msg.alpha;
+        let eta_a = first_round_msg.eta_a;
+        let eta_b = first_round_msg.eta_b;
+        let eta_c = first_round_msg.eta_c;
+
+        let beta = state.second_round_msg.unwrap().beta;
+        let gamma = state.gamma.unwrap();
+
+        let v_H_at_alpha = evals.get_poly_eval("vanishing_poly_h".into(), alpha)?;
+        let v_H_at_beta = evals.get_poly_eval("vanishing_poly_h".into(), beta)?;
+
+        let t_at_beta = evals.get_poly_eval("t".into(), beta)?;
+
+        // Outer sumcheck using the provided evaluation values:
+        let outer_sumcheck = {
+
+            // Evaluate polynomials at beta
+            let r_alpha_at_beta = state.domain_h.eval_unnormalized_bivariate_lagrange_poly(alpha, beta);
+            let v_X_at_beta = x_domain.evaluate_vanishing_polynomial(beta);
+
+            let w_at_beta = evals.get_poly_eval("w".into(), beta)?;
+            let z_a_at_beta = evals.get_poly_eval("z_a".into(), beta)?;
+            let z_b_at_beta = evals.get_poly_eval("z_b".into(), beta)?;
+            let z_1_at_beta = evals.get_poly_eval("z_1".into(), beta)?;
+            let z_1_at_g_beta = evals.get_poly_eval("z_1".into(), g_h * beta)?;
+            let h_1_at_beta = evals.get_poly_eval("h_1".into(), beta)?;
+
+            // we compute the public input polynomial using FFT
+            let x_at_beta = x_domain
+                .evaluate_all_lagrange_coefficients(beta)
+                .into_iter()
+                .zip(public_input)
+                .map(|(l, x)| l * &x)
+                .fold(F::zero(), |x, y| x + &y);
+
+            // Outer sumcheck, using
+            // z(X) = x(X) + w(X) * v_X(X)
+            (r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta) * z_a_at_beta)
+                + (r_alpha_at_beta * eta_b * z_b_at_beta)
+                - (t_at_beta * v_X_at_beta * w_at_beta)
+                - (t_at_beta * x_at_beta)
+                - (v_H_at_beta * h_1_at_beta)
+                + z_1_at_beta
+                - z_1_at_g_beta
+        };
+
+        if !outer_sumcheck.is_zero(){
+            Err(Error::VerificationEquationFailed("Outer sumcheck".to_owned()))?
+        }
+
+        //  Inner sumcheck, using the provided evaluation values
+        let inner_sumcheck = {
+
+            let beta_alpha = beta * alpha;
+
+            // Evaluate polynomials at gamma
+
+            let v_K_at_gamma = evals.get_poly_eval("vanishing_poly_k".into(), gamma)?;
+
+            let z_2_at_gamma = evals.get_poly_eval("z_2".into(), gamma)?;
+            let z_2_at_g_gamma = evals.get_poly_eval("z_2".into(), g_k * gamma)?;
+            let h_2_at_gamma = evals.get_poly_eval("h_2".into(), gamma)?;
+
+            let a_row_at_gamma = evals.get_poly_eval("a_row".into(), gamma)?;
+            let a_col_at_gamma = evals.get_poly_eval("a_col".into(), gamma)?;
+            let a_row_col_at_gamma = evals.get_poly_eval("a_row_col".into(), gamma)?;
+            let a_val_at_gamma = evals.get_poly_eval("a_val".into(), gamma)?;
+
+            let b_row_at_gamma = evals.get_poly_eval("b_row".into(), gamma)?;
+            let b_col_at_gamma = evals.get_poly_eval("b_col".into(), gamma)?;
+            let b_row_col_at_gamma = evals.get_poly_eval("b_row_col".into(), gamma)?;
+            let b_val_at_gamma = evals.get_poly_eval("b_val".into(), gamma)?;
+
+            let c_row_at_gamma = evals.get_poly_eval("c_row".into(), gamma)?;
+            let c_col_at_gamma = evals.get_poly_eval("c_col".into(), gamma)?;
+            let c_row_col_at_gamma = evals.get_poly_eval("c_row_col".into(), gamma)?;
+            let c_val_at_gamma = evals.get_poly_eval("c_val".into(), gamma)?;
+
+            // Linearization of the inner sumcheck equation
+
+            let a_denom_at_gamma = beta_alpha - (alpha * a_row_at_gamma) - (beta * a_col_at_gamma) + a_row_col_at_gamma;
+            let b_denom_at_gamma = beta_alpha - (alpha * b_row_at_gamma) - (beta * b_col_at_gamma) + b_row_col_at_gamma;
+            let c_denom_at_gamma = beta_alpha - (alpha * c_row_at_gamma) - (beta * c_col_at_gamma) + c_row_col_at_gamma;
+
+            let b_at_gamma = a_denom_at_gamma * b_denom_at_gamma * c_denom_at_gamma;
+            let b_expr_at_gamma = b_at_gamma * (z_2_at_g_gamma - z_2_at_gamma + &(t_at_beta / &k_size));
+
+            let mut inner_sumcheck =
+                (eta_a * b_denom_at_gamma * c_denom_at_gamma * a_val_at_gamma) +
+                    (eta_b * a_denom_at_gamma * c_denom_at_gamma * b_val_at_gamma) +
+                    (eta_c * b_denom_at_gamma * a_denom_at_gamma * c_val_at_gamma);
+
+            inner_sumcheck *= v_H_at_alpha * v_H_at_beta;
+            inner_sumcheck -= b_expr_at_gamma;
+            inner_sumcheck -= v_K_at_gamma * h_2_at_gamma;
+            inner_sumcheck
+        };
+
+        if !inner_sumcheck.is_zero(){
+            Err(Error::VerificationEquationFailed("Inner sumcheck".to_owned()))?
+        }
+
+        Ok(())
     }
 }
 
@@ -304,6 +416,9 @@ impl<F: PrimeField> AHPForR1CS<F> {
 pub trait EvaluationsProvider<F: Field> {
     /// Get the evaluation of linear combination `lc` at `point`.
     fn get_lc_eval(&self, lc: &LinearCombination<F>, point: F) -> Result<F, Error>;
+
+    /// Get the evaluation of a polynomial given its `label` at `point`.
+    fn get_poly_eval(&self, label: PolynomialLabel, point: F) -> Result<F, Error>;
 }
 
 impl<'a, F: Field> EvaluationsProvider<F> for poly_commit::Evaluations<'a, F> {
@@ -312,6 +427,13 @@ impl<'a, F: Field> EvaluationsProvider<F> for poly_commit::Evaluations<'a, F> {
         self.get(&key)
             .map(|v| *v)
             .ok_or(Error::MissingEval(lc.label.clone()))
+    }
+
+    fn get_poly_eval(&self, label: PolynomialLabel, point: F) -> Result<F, Error> {
+        let key = (label.clone(), point);
+        self.get(&key)
+            .map(|v| *v)
+            .ok_or(Error::MissingEval(label))
     }
 }
 
@@ -339,6 +461,10 @@ impl<'a, F: Field, T: Borrow<LabeledPolynomial<F>>> EvaluationsProvider<F> for V
         }
         Ok(eval)
     }
+
+    fn get_poly_eval(&self, _label: PolynomialLabel, _point: F) -> Result<F, Error> {
+        unimplemented!()
+    }
 }
 
 /// Describes the failure modes of the AHP scheme.
@@ -346,6 +472,8 @@ impl<'a, F: Field, T: Borrow<LabeledPolynomial<F>>> EvaluationsProvider<F> for V
 pub enum Error {
     /// During verification, a required evaluation is missing
     MissingEval(String),
+    /// One of AHP verification equations has failed.
+    VerificationEquationFailed(String),
     /// The number of public inputs is incorrect.
     InvalidPublicInputLength,
     /// The instance generated during proving does not match that in the index.

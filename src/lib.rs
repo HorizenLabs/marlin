@@ -19,7 +19,7 @@ extern crate bench_utils;
 
 use algebra::{Field, ToConstraintField, ToBytes, to_bytes, AffineCurve};
 use std::marker::PhantomData;
-use poly_commit::{Evaluations, LabeledPolynomial};
+use poly_commit::{Evaluations, LabeledPolynomial, evaluate_query_set, BatchLCProof};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use poly_commit::fiat_shamir::FiatShamirRng;
 use r1cs_core::{ConstraintSynthesizer, SynthesisError};
@@ -52,7 +52,11 @@ mod test;
 
 /// Configuration parameters for the Marlin proving system
 pub trait MarlinConfig: Clone {
-    /// Modify internal behaviour for usage with recursive SNARKs
+    /// Modify internal behaviour for usage with recursive SNARKs:
+    /// in particular it enables some constraints-friendly and
+    /// design-friendly optimizations useful for R1CS circuits
+    /// that should verify the produced Marlin proof in a
+    /// recursive fashion.
     const FOR_RECURSION: bool;
 }
 
@@ -379,36 +383,58 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .chain(third_comm_rands)
             .collect();
 
-        // Compute the AHP verifier's query set.
-        let (query_set, verifier_state) =
-            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng, for_recursion);
-        let lc_s = AHPForR1CS::construct_linear_combinations(
-            &public_input,
-            &polynomials,
-            &verifier_state,
-            for_recursion
-        )?;
+        // Compute the AHP verifier's query set and the opening values of the committed polynomials.
+        let (query_set, mut evaluations, lc_s) = if for_recursion {
 
-        let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
-        let mut evaluations = Vec::new();
-        for (label, (_, point)) in &query_set {
-            let lc = lc_s
-                .iter()
-                .find(|lc| &lc.label == label)
-                .ok_or(ahp::Error::MissingEval(label.to_string()))?;
-            let eval = polynomials.get_lc_eval(&lc, *point)?;
-            if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                evaluations.push((label.to_string(), eval));
+            // Compute and send all the openings for all polynomials
+            let (query_set, _) =
+                AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+
+            let eval_time = start_timer!(|| "Evaluating polynomials over query set");
+
+            let evaluations = evaluate_query_set(
+                    polynomials.clone(), &query_set
+            ).into_iter().map(|(k, v)| { (k.0, v) }).collect::<Vec<_>>();
+
+            end_timer!(eval_time);
+
+            (query_set, evaluations, None)
+
+        } else {
+
+            // Compute LCs representing inner and outer sumchecks, and send only the
+            // the minimum amount of opening values required to verify the linchecks
+            let (query_set, verifier_state) =
+                AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
+            let lc_s = AHPForR1CS::construct_linear_combinations(
+                &public_input,
+                &polynomials,
+                &verifier_state,
+            )?;
+
+            let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
+            let mut evaluations = Vec::new();
+            for (label, (_, point)) in &query_set {
+                let lc = lc_s
+                    .iter()
+                    .find(|lc| &lc.label == label)
+                    .ok_or(ahp::Error::MissingEval(label.to_string()))?;
+                let eval = polynomials.get_lc_eval(&lc, *point)?;
+                if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
+                    evaluations.push((label.to_string(), eval));
+                }
             }
-        }
+            end_timer!(eval_time);
+            (query_set, evaluations, Some(lc_s))
+        };
+
         evaluations.sort_by(|a, b| a.0.cmp(&b.0));
         let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<G::ScalarField>>();
-        end_timer!(eval_time);
-        
+
         fs_rng.absorb_nonnative_field_elements(&evaluations);
 
         let pc_proof = if for_recursion {
-            let num_open_challenges: usize = polynomials.len();
+            let num_open_challenges: usize = polynomials.len() * 2;
 
             let mut opening_challenges = Vec::<G::ScalarField>::new();
             opening_challenges
@@ -416,24 +442,25 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
             let opening_challenges_f = |i| opening_challenges[i as usize];
 
-            PC::open_combinations_individual_opening_challenges(
+            let proof = PC::batch_open_individual_opening_challenges(
                 &index_pk.committer_key,
-                &lc_s,
-                polynomials,
+                polynomials.clone(),
                 &labeled_comms,
                 &query_set,
                 &opening_challenges_f,
                 &comm_rands,
                 Some(zk_rng),
                 &mut fs_rng
-            )
-                .map_err(Error::from_pc_err)?
+            ).map_err(Error::from_pc_err)?;
+
+            BatchLCProof::<G, PC>{ proof, evals: None }
+
         } else {
             let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
             PC::open_combinations(
                 &index_pk.committer_key,
-                &lc_s,
+                &lc_s.unwrap(),
                 polynomials,
                 &labeled_comms,
                 &query_set,
@@ -441,8 +468,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
                 &comm_rands,
                 Some(zk_rng),
                 &mut fs_rng
-            )
-                .map_err(Error::from_pc_err)?
+            ).map_err(Error::from_pc_err)?
         };
 
         // Gather prover messages together.
@@ -551,15 +577,18 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
             .collect();
 
-        let (query_set, verifier_state) =
-            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng, for_recursion);
+        let (query_set, verifier_state) = if for_recursion {
+            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng)
+        } else {
+            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng)
+        };
 
         fs_rng.absorb_nonnative_field_elements(&proof.evaluations);
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
         for (poly_label, (_, point)) in query_set.iter().cloned() {
-            if AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
+            if !for_recursion && AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref())  {
                 evaluations.insert((poly_label, point), G::ScalarField::zero());
             } else {
                 evaluation_labels.push((poly_label, point));
@@ -571,34 +600,46 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             evaluations.insert(q, *eval);
         }
 
-        let lc_s = AHPForR1CS::construct_linear_combinations(
-            &public_input,
-            &evaluations,
-            &verifier_state,
-            for_recursion,
-        )?;
-
         let evaluations_are_correct = if for_recursion {
-            let num_open_challenges: usize = commitments.len();
+
+            let evaluations_are_correct = AHPForR1CS::verify_sumchecks(
+                &public_input,
+                &evaluations,
+                &verifier_state,
+            );
+
+            if evaluations_are_correct.is_err()
+            {
+                eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
+                return Ok(false)
+            }
+
+            let num_open_challenges: usize = commitments.len() * 2;
 
             let mut opening_challenges = Vec::<G::ScalarField>::new();
             opening_challenges
                 .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
 
             let opening_challenges_f = |i| opening_challenges[i as usize];
-            PC::check_combinations_individual_opening_challenges(
+
+            PC::batch_check_individual_opening_challenges(
                 &index_vk.verifier_key,
-                &lc_s,
                 &commitments,
                 &query_set,
                 &evaluations,
-                &proof.pc_proof,
+                &proof.pc_proof.proof,
                 &opening_challenges_f,
                 rng,
                 &mut fs_rng
-            )
-                .map_err(Error::from_pc_err)?
+            ).map_err(Error::from_pc_err)?
         } else {
+
+            let lc_s = AHPForR1CS::construct_linear_combinations(
+                &public_input,
+                &evaluations,
+                &verifier_state,
+            )?;
+
             let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
             PC::check_combinations(
@@ -611,8 +652,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
                 opening_challenge,
                 rng,
                 &mut fs_rng
-            )
-                .map_err(Error::from_pc_err)?
+            ).map_err(Error::from_pc_err)?
         };
 
         if !evaluations_are_correct {

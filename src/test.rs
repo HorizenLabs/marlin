@@ -90,7 +90,7 @@ mod marlin {
     fn test_circuit(num_constraints: usize, num_variables: usize) {
         let rng = &mut thread_rng();
 
-        let universal_srs = MarlinInstDefault::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
+        /*let universal_srs = MarlinInstDefault::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
 
         for _ in 0..50 {
             let a = Fq::rand(rng);
@@ -117,11 +117,11 @@ mod marlin {
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
             assert!(!MarlinInstDefault::verify(&index_vk, &[a, a], &proof, rng).unwrap());
-        }
+        }*/
 
         let universal_srs = MarlinInstRecursive::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
 
-        for _ in 0..50 {
+        for _ in 0..1 {
             let a = Fq::rand(rng);
             let b = Fq::rand(rng);
             let mut c = a;

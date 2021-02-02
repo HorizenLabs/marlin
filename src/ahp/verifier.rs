@@ -113,13 +113,15 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Output the query state and next round state.
-    pub fn verifier_query_set<'a, 'b, ConstraintF: PrimeField, FS: FiatShamirRng<F, ConstraintF>>(
+    /// This approach, exploiting LC of polynomials, allows to send less opening values,
+    /// thus reducing the size of the proof, but comes with additional variable base
+    /// scalar multiplications performed by the verifier in order to verify the sumcheck
+    /// equations.
+    pub fn verifier_lcs_query_set<'a, 'b, ConstraintF: PrimeField, FS: FiatShamirRng<F, ConstraintF>>(
         state: VerifierState<F>,
         _: &'a mut FS,
-        with_vanishing: bool,
     ) -> (QuerySet<'b, F>, VerifierState<F>) {
 
-        let alpha = state.first_round_msg.unwrap().alpha;
         let beta = state.second_round_msg.unwrap().beta;
         let gamma = state.gamma.unwrap();
 
@@ -152,11 +154,62 @@ impl<F: PrimeField> AHPForR1CS<F> {
         query_set.insert(("c_denom".into(), ("gamma".into(), gamma)));
         query_set.insert(("inner_sumcheck".into(), ("gamma".into(), gamma)));
 
-        if with_vanishing {
-            query_set.insert(("vanishing_poly_h_alpha".into(), ("alpha".into(), alpha)));
-            query_set.insert(("vanishing_poly_h_beta".into(), ("beta".into(), beta)));
-            query_set.insert(("vanishing_poly_k_gamma".into(), ("gamma".into(), gamma)));
-        }
+        (query_set, state)
+    }
+
+    /// Output the query state and next round state.
+    /// This approach sends all the opening values of all the polynomials (thus increasing the
+    /// size of the proof), but doesn't come with any additional operation to be performed by
+    /// the verifier (unlike the lc case), apart from the lincheck of course.
+    pub fn verifier_query_set<'a, 'b, ConstraintF: PrimeField, FS: FiatShamirRng<F, ConstraintF>>(
+        state: VerifierState<F>,
+        _: &'a mut FS,
+    ) -> (QuerySet<'b, F>, VerifierState<F>) {
+
+        let alpha = state.first_round_msg.unwrap().alpha;
+        let beta = state.second_round_msg.unwrap().beta;
+        let gamma = state.gamma.unwrap();
+
+        let g_h = state.domain_h.group_gen();
+        let g_k = state.domain_k.group_gen();
+
+        let mut query_set = QuerySet::new();
+
+        // Inner sumcheck
+
+        // First round polys
+        query_set.insert(("w".into(), ("beta".into(), beta)));
+        query_set.insert(("z_a".into(), ("beta".into(), beta)));
+        query_set.insert(("z_b".into(), ("beta".into(), beta)));
+
+        // Second round polys
+        query_set.insert(("t".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("g * beta".into(), g_h * beta)));
+        query_set.insert(("h_1".into(), ("beta".into(), beta)));
+
+        // Outer sumcheck
+
+        // Third round polys
+        query_set.insert(("z_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("z_2".into(), ("g * gamma".into(), g_k * gamma)));
+        query_set.insert(("h_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_val".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_val".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_val".into(), ("gamma".into(), gamma)));
+
+        query_set.insert(("vanishing_poly_h".into(), ("alpha".into(), alpha)));
+        query_set.insert(("vanishing_poly_h".into(), ("beta".into(), beta)));
+        query_set.insert(("vanishing_poly_k".into(), ("gamma".into(), gamma)));
 
         (query_set, state)
     }
