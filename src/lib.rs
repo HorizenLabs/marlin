@@ -388,17 +388,24 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
             // Compute and send all the openings for all polynomials
             let (query_set, _) =
-                AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+                AHPForR1CS::verifier_query_set(verifier_state.clone(), &mut fs_rng);
 
             let eval_time = start_timer!(|| "Evaluating polynomials over query set");
 
             let evaluations = evaluate_query_set(
                     polynomials.clone(), &query_set
-            ).into_iter().map(|(k, v)| { (k.0, v) }).collect::<Vec<_>>();
-
+            );
+            debug_assert!(
+                AHPForR1CS::verify_sumchecks(
+                    &public_input,
+                    &evaluations,
+                    &verifier_state
+                ).is_ok()
+            );
+            let evaluations_vec = evaluations.into_iter().map(|(k, v)| { (k, v) }).collect::<Vec<_>>();
             end_timer!(eval_time);
 
-            (query_set, evaluations, None)
+            (query_set, evaluations_vec, None)
 
         } else {
 
@@ -421,7 +428,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
                     .ok_or(ahp::Error::MissingEval(label.to_string()))?;
                 let eval = polynomials.get_lc_eval(&lc, *point)?;
                 if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                    evaluations.push((label.to_string(), eval));
+                    evaluations.push(((label.to_string(), *point), eval));
                 }
             }
             end_timer!(eval_time);
@@ -591,13 +598,13 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             if !for_recursion && AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref())  {
                 evaluations.insert((poly_label, point), G::ScalarField::zero());
             } else {
-                evaluation_labels.push((poly_label, point));
+                evaluation_labels.push(((poly_label, point), point));
             }
         }
 
         evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
         for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
-            evaluations.insert(q, *eval);
+            evaluations.insert(q.0, *eval);
         }
 
         let evaluations_are_correct = if for_recursion {
