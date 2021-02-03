@@ -244,12 +244,8 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             &index_pk.index_vk,
         ));
 
-
         // Add check that c is in the correct mode.
         let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
-        let public_input = prover_init_state.public_input();
-
-        fs_rng.absorb_nonnative_field_elements(&public_input);
 
         // --------------------------------------------------------------------
         // First round
@@ -257,10 +253,23 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (prover_first_msg, prover_first_oracles, prover_state) =
             AHPForR1CS::prover_first_round(prover_init_state, zk_rng)?;
 
+        let x_poly = vec![prover_state.x_poly.clone().unwrap()];
+
         let first_round_comm_time = start_timer!(|| "Committing to first round polys");
         let (first_comms, first_comm_rands) = PC::commit(
             &index_pk.committer_key,
-            prover_first_oracles.iter(),
+            // Include the x_poly in the polys to be committed: the prover will send the
+            // commitment to the x_poly and its opening value at the challenge beta.
+            // The verifier can check that X(beta) is correct by:
+            // 1) Verifying the commitment to the X polynomial C_x with a fixed-based
+            // MSM(public_inputs, Ls), where the Ls are the Lagrange Polynomials
+            // defined over the domain_x;
+            // 2) Verifying, as usual, its corresponding opening proof.
+            // The advantage of this is that, in the verifier circuit, we replace a FFT
+            // with simulated arithmetic with a bunch of fixed based scalar multiplications,
+            // in native field arithmetic, and this turns out to be around 4 times cheaper.
+            // This optimization comes from MinaProtocol.
+            prover_first_oracles.iter().chain(x_poly.iter()),
             Some(zk_rng),
         )
             .map_err(Error::from_pc_err)?;
@@ -352,6 +361,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .iter()
             .chain(vanishing_polys.iter())
             .chain(prover_first_oracles.iter())
+            .chain(x_poly.iter())// Include the x_poly
             .chain(prover_second_oracles.iter())
             .chain(prover_third_oracles.iter())
             .collect();
@@ -642,7 +652,6 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         
         fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
         fs_rng.absorb_native_field_elements(&compute_vk_hash::<G, PC, FS>(index_vk));
-        fs_rng.absorb_nonnative_field_elements(&public_input);
 
         // --------------------------------------------------------------------
         // First round
@@ -689,11 +698,15 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let degree_bounds = vec![None; index_vk.index_comms.len()]
             .into_iter()
             .chain(AHPForR1CS::prover_first_round_degree_bounds(&index_info))
+            .chain(vec![None].into_iter()) // For the x_poly
             .chain(AHPForR1CS::prover_second_round_degree_bounds(&index_info))
             .chain(AHPForR1CS::prover_third_round_degree_bounds(&index_info))
             .collect::<Vec<_>>();
 
-        let polynomial_labels: Vec<String> = AHPForR1CS::<G::ScalarField>::polynomial_labels_with_vanishing().collect();
+        let polynomial_labels: Vec<String> =
+            AHPForR1CS::<G::ScalarField>::polynomial_labels_with_vanishing()
+                .chain(vec!["x".into()].into_iter()) //Add the x_poly
+                .collect();
 
         // Gather commitments in one vector.
         let commitments: Vec<_> = index_vk

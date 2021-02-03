@@ -179,6 +179,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         // Inner sumcheck
 
         // First round polys
+        query_set.insert(("x".into(), ("beta".into(), beta)));
         query_set.insert(("w".into(), ("beta".into(), beta)));
         query_set.insert(("z_a".into(), ("beta".into(), beta)));
         query_set.insert(("z_b".into(), ("beta".into(), beta)));

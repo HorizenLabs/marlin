@@ -26,6 +26,7 @@ pub struct ProverState<'a, F: PrimeField> {
     /// query bound b
     zk_bound: usize,
 
+    pub x_poly: Option<LabeledPolynomial<F>>,
     w_poly: Option<LabeledPolynomial<F>>,
     mz_polys: Option<(LabeledPolynomial<F>, LabeledPolynomial<F>)>,
 
@@ -201,6 +202,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             witness_assignment,
             z_a: Some(z_a),
             z_b: Some(z_b),
+            x_poly: None,
             w_poly: None,
             mz_polys: None,
             zk_bound,
@@ -291,6 +293,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let w = LabeledPolynomial::new("w".to_string(), w_poly, None, Some(1));
         let z_a = LabeledPolynomial::new("z_a".to_string(), z_a_poly, None, Some(1));
         let z_b = LabeledPolynomial::new("z_b".to_string(), z_b_poly, None, Some(1));
+        let x = LabeledPolynomial::new("x".to_string(), x_poly, None, None);
 
         let oracles = ProverFirstOracles {
             w: w.clone(),
@@ -298,6 +301,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             z_b: z_b.clone(),
         };
 
+        state.x_poly = Some(x);
         state.w_poly = Some(w);
         state.mz_polys = Some((z_a, z_b));
         end_timer!(round_time);
@@ -398,18 +402,11 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let z_poly_time = start_timer!(|| "Compute z poly");
 
-        let domain_x = get_best_evaluation_domain::<F>(state.formatted_input_assignment.len())
-            .ok_or(SynthesisError::PolynomialDegreeTooLarge)
-            .unwrap();
-        let x_poly = EvaluationsOnDomain::from_vec_and_domain(
-            state.formatted_input_assignment.clone(),
-            domain_x.clone(),
-        )
-        .interpolate();
+        let x_poly = state.x_poly.as_ref().unwrap();
         let w_poly = state.w_poly.as_ref().unwrap();
 
         // deg(z_poly) = |H|- 1 + zk_bound
-        let mut z_poly = w_poly.polynomial().mul_by_vanishing_poly(domain_x.size());
+        let mut z_poly = w_poly.polynomial().mul_by_vanishing_poly(state.domain_x.size());
         z_poly.coeffs.par_iter_mut()
             .zip(&x_poly.coeffs)
             .for_each(|(z, x)| *z += x);
@@ -516,6 +513,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             h_1: LabeledPolynomial::new("h_1".into(), h_1, None, Some(1)),
         };
 
+        state.x_poly = None;
         state.w_poly = None;
         state.verifier_first_msg = Some(*ver_message);
         end_timer!(round_time);
