@@ -223,20 +223,32 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         c: C,
         zk_rng: &mut R,
     ) -> Result<Proof<G, PC>, Error<PC::Error>> {
+        match MC::FOR_RECURSION {
+            true => Self::prove_for_recursion(index_pk, c, zk_rng),
+            false => Self::prove_standard(index_pk, c, zk_rng)
+        }
+    }
+
+    /// Create a zkSNARK asserting that the constraint system is satisfied.
+    fn prove_for_recursion<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
+        index_pk: &IndexProverKey<G, PC>,
+        c: C,
+        zk_rng: &mut R,
+    ) -> Result<Proof<G, PC>, Error<PC::Error>> {
         let prover_time = start_timer!(|| "Marlin::Prover");
-        // Add check that c is in the correct mode.
-
-        let for_recursion = MC::FOR_RECURSION;
-
-        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
-        let public_input = prover_init_state.public_input();
 
         let mut fs_rng = FS::new();
-        
+
         fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME].unwrap());
         fs_rng.absorb_native_field_elements(&compute_vk_hash::<G, PC, FS>(
             &index_pk.index_vk,
         ));
+
+
+        // Add check that c is in the correct mode.
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
+        let public_input = prover_init_state.public_input();
+
         fs_rng.absorb_nonnative_field_elements(&public_input);
 
         // --------------------------------------------------------------------
@@ -251,9 +263,9 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             prover_first_oracles.iter(),
             Some(zk_rng),
         )
-        .map_err(Error::from_pc_err)?;
+            .map_err(Error::from_pc_err)?;
         end_timer!(first_round_comm_time);
-        
+
         fs_rng.absorb_native_field_elements(&first_comms);
         match prover_first_msg.clone() {
             ProverMsg::EmptyMessage => (),
@@ -276,7 +288,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             prover_second_oracles.iter(),
             Some(zk_rng),
         )
-        .map_err(Error::from_pc_err)?;
+            .map_err(Error::from_pc_err)?;
         end_timer!(second_round_comm_time);
 
         fs_rng.absorb_native_field_elements(&second_comms);
@@ -300,7 +312,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             prover_third_oracles.iter(),
             Some(zk_rng),
         )
-        .map_err(Error::from_pc_err)?;
+            .map_err(Error::from_pc_err)?;
         end_timer!(third_round_comm_time);
 
         fs_rng.absorb_native_field_elements(&third_comms);
@@ -312,7 +324,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
         // --------------------------------------------------------------------
 
-        let vanishing_polys = if for_recursion {
+        let vanishing_polys = {
             let domain_h = get_best_evaluation_domain::<G::ScalarField>(index_pk.index.index_info.num_constraints)
                 .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
             let domain_k = get_best_evaluation_domain::<G::ScalarField>(index_pk.index.index_info.num_non_zero)
@@ -332,8 +344,6 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
                     None,
                 ),
             ]
-        } else {
-            vec![]
         };
 
         // Gather prover polynomials in one vector.
@@ -348,19 +358,13 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
         // Gather commitments in one vector.
         #[rustfmt::skip]
-        let commitments = vec![
+            let commitments = vec![
             first_comms.iter().map(|p| p.commitment().clone()).collect(),
             second_comms.iter().map(|p| p.commitment().clone()).collect(),
             third_comms.iter().map(|p| p.commitment().clone()).collect(),
         ];
 
-        let indexer_polynomials = if for_recursion {
-            AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS_WITH_VANISHING
-                .clone()
-                .to_vec()
-        } else {
-            AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS.clone().to_vec()
-        };
+        let indexer_polynomials = AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS_WITH_VANISHING.clone().to_vec();
 
         let labeled_comms: Vec<_> = index_pk
             .index_vk
@@ -384,90 +388,212 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .collect();
 
         // Compute the AHP verifier's query set and the opening values of the committed polynomials.
-        let (query_set, mut evaluations, lc_s) = if for_recursion {
+        let (query_set, _) =
+            AHPForR1CS::verifier_query_set(verifier_state.clone(), &mut fs_rng);
 
-            // Compute and send all the openings for all polynomials
-            let (query_set, _) =
-                AHPForR1CS::verifier_query_set(verifier_state.clone(), &mut fs_rng);
+        let eval_time = start_timer!(|| "Evaluating polynomials over query set");
 
-            let eval_time = start_timer!(|| "Evaluating polynomials over query set");
+        let mut evaluations = evaluate_query_set_to_vec(polynomials.clone(), &query_set);
 
-            let evaluations = evaluate_query_set_to_vec(polynomials.clone(), &query_set);
-
-            end_timer!(eval_time);
-
-            (query_set, evaluations, None)
-
-        } else {
-
-            // Compute LCs representing inner and outer sumchecks, and send only the
-            // the minimum amount of opening values required to verify the linchecks
-            let (query_set, verifier_state) =
-                AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
-            let lc_s = AHPForR1CS::construct_linear_combinations(
-                &public_input,
-                &polynomials,
-                &verifier_state,
-            )?;
-
-            let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
-            let mut evaluations = Vec::new();
-            for (label, (point_label, point)) in &query_set {
-                let lc = lc_s
-                    .iter()
-                    .find(|lc| &lc.label == label)
-                    .ok_or(ahp::Error::MissingEval(label.to_string()))?;
-                let eval = polynomials.get_lc_eval(&lc, *point)?;
-                if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                    evaluations.push(((label.to_string(), point_label.to_string()), eval));
-                }
-            }
-            end_timer!(eval_time);
-            (query_set, evaluations, Some(lc_s))
-        };
+        end_timer!(eval_time);
 
         evaluations.sort_by(|a, b| a.0.cmp(&b.0));
         let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<G::ScalarField>>();
 
         fs_rng.absorb_nonnative_field_elements(&evaluations);
 
-        let pc_proof = if for_recursion {
-            let num_open_challenges: usize = polynomials.len() * 2;
+        let num_open_challenges: usize = polynomials.len() * 2;
 
-            let mut opening_challenges = Vec::<G::ScalarField>::new();
-            opening_challenges
-                .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
+        let mut opening_challenges = Vec::<G::ScalarField>::new();
+        opening_challenges
+            .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
 
-            let opening_challenges_f = |i| opening_challenges[i as usize];
+        let opening_challenges_f = |i| opening_challenges[i as usize];
 
-            let proof = PC::batch_open_individual_opening_challenges(
-                &index_pk.committer_key,
-                polynomials.clone(),
-                &labeled_comms,
-                &query_set,
-                &opening_challenges_f,
-                &comm_rands,
-                Some(zk_rng),
-                &mut fs_rng
-            ).map_err(Error::from_pc_err)?;
+        let proof = PC::batch_open_individual_opening_challenges(
+            &index_pk.committer_key,
+            polynomials.clone(),
+            &labeled_comms,
+            &query_set,
+            &opening_challenges_f,
+            &comm_rands,
+            Some(zk_rng),
+            &mut fs_rng
+        ).map_err(Error::from_pc_err)?;
 
-            BatchLCProof::<G, PC>{ proof, evals: None }
+        let pc_proof = BatchLCProof::<G, PC>{ proof, evals: None };
 
-        } else {
-            let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
+        // Gather prover messages together.
+        let prover_messages = vec![prover_first_msg, prover_second_msg, prover_third_msg];
 
-            PC::open_combinations(
-                &index_pk.committer_key,
-                &lc_s.unwrap(),
-                polynomials,
-                &labeled_comms,
-                &query_set,
-                opening_challenge,
-                &comm_rands,
-                Some(zk_rng),
-                &mut fs_rng
-            ).map_err(Error::from_pc_err)?
-        };
+        let proof = Proof::new(commitments, evaluations, prover_messages, pc_proof);
+        proof.print_size_info();
+        end_timer!(prover_time);
+        Ok(proof)
+    }
+
+    /// Doesn't adopt any optimizations to reduce the number of constraints
+    /// needed in a R1CS circuit to verify this proof.
+    fn prove_standard<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
+        index_pk: &IndexProverKey<G, PC>,
+        c: C,
+        zk_rng: &mut R,
+    ) -> Result<Proof<G, PC>, Error<PC::Error>> {
+        let prover_time = start_timer!(|| "Marlin::Prover");
+        // Add check that c is in the correct mode.
+
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
+        let public_input = prover_init_state.public_input();
+
+        let mut fs_rng = FS::new();
+
+        fs_rng.absorb_bytes(
+            &to_bytes![&Self::PROTOCOL_NAME, &index_pk.index_vk, &public_input].unwrap(),
+        );
+
+        // --------------------------------------------------------------------
+        // First round
+
+        let (prover_first_msg, prover_first_oracles, prover_state) =
+            AHPForR1CS::prover_first_round(prover_init_state, zk_rng)?;
+
+        let first_round_comm_time = start_timer!(|| "Committing to first round polys");
+        let (first_comms, first_comm_rands) = PC::commit(
+            &index_pk.committer_key,
+            prover_first_oracles.iter(),
+            Some(zk_rng),
+        )
+        .map_err(Error::from_pc_err)?;
+        end_timer!(first_round_comm_time);
+
+        fs_rng.absorb_bytes(&to_bytes![first_comms, prover_first_msg].unwrap());
+
+        let (verifier_first_msg, verifier_state) =
+            AHPForR1CS::verifier_first_round(index_pk.index_vk.index_info, &mut fs_rng)?;
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Second round
+
+        let (prover_second_msg, prover_second_oracles, prover_state) =
+            AHPForR1CS::prover_second_round(&verifier_first_msg, prover_state, zk_rng);
+
+        let second_round_comm_time = start_timer!(|| "Committing to second round polys");
+        let (second_comms, second_comm_rands) = PC::commit(
+            &index_pk.committer_key,
+            prover_second_oracles.iter(),
+            Some(zk_rng),
+        )
+        .map_err(Error::from_pc_err)?;
+        end_timer!(second_round_comm_time);
+
+        fs_rng.absorb_bytes(&to_bytes![second_comms, prover_second_msg].unwrap());
+
+        let (verifier_second_msg, verifier_state) =
+            AHPForR1CS::verifier_second_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Third round
+        let (prover_third_msg, prover_third_oracles) =
+            AHPForR1CS::prover_third_round(&verifier_second_msg, prover_state, zk_rng)?;
+
+        let third_round_comm_time = start_timer!(|| "Committing to third round polys");
+        let (third_comms, third_comm_rands) = PC::commit(
+            &index_pk.committer_key,
+            prover_third_oracles.iter(),
+            Some(zk_rng),
+        )
+        .map_err(Error::from_pc_err)?;
+        end_timer!(third_round_comm_time);
+
+        fs_rng.absorb_bytes(&to_bytes![third_comms, prover_third_msg].unwrap());
+
+        let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // Gather prover polynomials in one vector.
+        let polynomials: Vec<_> = index_pk
+            .index
+            .iter()
+            .chain(prover_first_oracles.iter())
+            .chain(prover_second_oracles.iter())
+            .chain(prover_third_oracles.iter())
+            .collect();
+
+        // Gather commitments in one vector.
+        #[rustfmt::skip]
+        let commitments = vec![
+            first_comms.iter().map(|p| p.commitment().clone()).collect(),
+            second_comms.iter().map(|p| p.commitment().clone()).collect(),
+            third_comms.iter().map(|p| p.commitment().clone()).collect(),
+        ];
+
+        let indexer_polynomials = AHPForR1CS::<G::ScalarField>::INDEXER_POLYNOMIALS.clone().to_vec();
+
+        let labeled_comms: Vec<_> = index_pk
+            .index_vk
+            .iter()
+            .cloned()
+            .zip(indexer_polynomials)
+            .map(|(c, l)| LabeledCommitment::new(l.to_string(), c, None))
+            .chain(first_comms.iter().cloned())
+            .chain(second_comms.iter().cloned())
+            .chain(third_comms.iter().cloned())
+            .collect();
+
+        // Gather commitment randomness together.
+        let comm_rands: Vec<PC::Randomness> = index_pk
+            .index_comm_rands
+            .clone()
+            .into_iter()
+            .chain(first_comm_rands)
+            .chain(second_comm_rands)
+            .chain(third_comm_rands)
+            .collect();
+
+        // Compute LCs representing inner and outer sumchecks, and send only the
+        // the minimum amount of opening values required to verify the linchecks
+        let (query_set, verifier_state) =
+            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
+        let lc_s = AHPForR1CS::construct_linear_combinations(
+            &public_input,
+            &polynomials,
+            &verifier_state,
+        )?;
+
+        let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
+        let mut evaluations = Vec::new();
+        for (label, (point_label, point)) in &query_set {
+            let lc = lc_s
+                .iter()
+                .find(|lc| &lc.label == label)
+                .ok_or(ahp::Error::MissingEval(label.to_string()))?;
+            let eval = polynomials.get_lc_eval(&lc, *point)?;
+            if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
+                evaluations.push(((label.to_string(), point_label.to_string()), eval));
+            }
+        }
+        end_timer!(eval_time);
+
+        evaluations.sort_by(|a, b| a.0.cmp(&b.0));
+        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<G::ScalarField>>();
+
+        fs_rng.absorb_bytes(&to_bytes![&evaluations].unwrap());
+
+        let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
+
+        let pc_proof = PC::open_combinations(
+            &index_pk.committer_key,
+            &lc_s,
+            polynomials,
+            &labeled_comms,
+            &query_set,
+            opening_challenge,
+            &comm_rands,
+            Some(zk_rng),
+            &mut fs_rng
+        ).map_err(Error::from_pc_err)?;
 
         // Gather prover messages together.
         let prover_messages = vec![prover_first_msg, prover_second_msg, prover_third_msg];
@@ -486,9 +612,19 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         proof: &Proof<G, PC>,
         rng: &mut R,
     ) -> Result<bool, Error<PC::Error>> {
-        let verifier_time = start_timer!(|| "Marlin::Verify");
+        match MC::FOR_RECURSION {
+            true => Self::verify_recursive(index_vk, public_input, proof, rng),
+            false => Self::verify_standard(index_vk, public_input, proof, rng),
+        }
+    }
 
-        let for_recursion = MC::FOR_RECURSION;
+    fn verify_recursive<R: RngCore>(
+        index_vk: &IndexVerifierKey<G, PC>,
+        public_input: &[G::ScalarField],
+        proof: &Proof<G, PC>,
+        rng: &mut R,
+    ) -> Result<bool, Error<PC::Error>> {
+        let verifier_time = start_timer!(|| "Marlin::Verify");
 
         let public_input = {
             let domain_x = get_best_evaluation_domain::<G::ScalarField>(public_input.len() + 1).unwrap();
@@ -557,11 +693,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .chain(AHPForR1CS::prover_third_round_degree_bounds(&index_info))
             .collect::<Vec<_>>();
 
-        let polynomial_labels: Vec<String> = if for_recursion {
-            AHPForR1CS::<G::ScalarField>::polynomial_labels_with_vanishing().collect()
-        } else {
-            AHPForR1CS::<G::ScalarField>::polynomial_labels().collect()
-        };
+        let polynomial_labels: Vec<String> = AHPForR1CS::<G::ScalarField>::polynomial_labels_with_vanishing().collect();
 
         // Gather commitments in one vector.
         let commitments: Vec<_> = index_vk
@@ -575,18 +707,150 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
             .collect();
 
-        let (query_set, verifier_state) = if for_recursion {
-            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng)
-        } else {
-            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng)
-        };
+        let (query_set, verifier_state) = AHPForR1CS::verifier_query_set(
+            verifier_state,
+            &mut fs_rng
+        );
 
         fs_rng.absorb_nonnative_field_elements(&proof.evaluations);
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
         for (poly_label, (point_label, point)) in query_set.iter().cloned() {
-            if !for_recursion && AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref())  {
+            evaluation_labels.push(((poly_label, point_label), point));
+        }
+
+        evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
+        for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
+            evaluations.insert(((q.0).0, q.1), *eval);
+        }
+
+        let evaluations_are_correct = AHPForR1CS::verify_sumchecks(
+            &public_input,
+            &evaluations,
+            &verifier_state,
+        );
+
+        if evaluations_are_correct.is_err()
+        {
+            eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
+            end_timer!(verifier_time);
+            return Ok(false)
+        }
+
+        let num_open_challenges: usize = commitments.len() * 2;
+
+        let mut opening_challenges = Vec::<G::ScalarField>::new();
+        opening_challenges
+            .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
+
+        let opening_challenges_f = |i| opening_challenges[i as usize];
+
+        let openings_are_correct = PC::batch_check_individual_opening_challenges(
+            &index_vk.verifier_key,
+            &commitments,
+            &query_set,
+            &evaluations,
+            &proof.pc_proof.proof,
+            &opening_challenges_f,
+            rng,
+            &mut fs_rng
+        );
+
+        if openings_are_correct.is_err() {
+            println!("Failed opening proof verification: {:?}", openings_are_correct.err().unwrap());
+            end_timer!(verifier_time);
+            return Ok(false);
+        }
+
+        end_timer!(verifier_time);
+        Ok(true)
+    }
+
+    fn verify_standard<R: RngCore>(
+        index_vk: &IndexVerifierKey<G, PC>,
+        public_input: &[G::ScalarField],
+        proof: &Proof<G, PC>,
+        rng: &mut R,
+    ) -> Result<bool, Error<PC::Error>>
+    {
+        let verifier_time = start_timer!(|| "Marlin::Verify");
+
+        let public_input = {
+            let domain_x = get_best_evaluation_domain::<G::ScalarField>(public_input.len() + 1).unwrap();
+
+            let mut unpadded_input = public_input.to_vec();
+            unpadded_input.resize(
+                std::cmp::max(public_input.len(), domain_x.size() - 1),
+                G::ScalarField::zero(),
+            );
+
+            unpadded_input
+        };
+
+        let mut fs_rng = FS::new();
+
+        fs_rng.absorb_bytes(&to_bytes![&Self::PROTOCOL_NAME, &index_vk, &public_input].unwrap());
+
+        // --------------------------------------------------------------------
+        // First round
+
+        let first_comms = &proof.commitments[0];
+        fs_rng.absorb_bytes(&to_bytes![first_comms, proof.prover_messages[0]].unwrap());
+
+        let (_, verifier_state) =
+            AHPForR1CS::verifier_first_round(index_vk.index_info, &mut fs_rng)?;
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Second round
+        let second_comms = &proof.commitments[1];
+        fs_rng.absorb_bytes(&to_bytes![second_comms, proof.prover_messages[1]].unwrap());
+
+        let (_, verifier_state) = AHPForR1CS::verifier_second_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Third round
+        let third_comms = &proof.commitments[2];
+        fs_rng.absorb_bytes(&to_bytes![third_comms, proof.prover_messages[2]].unwrap());
+
+        let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // Collect degree bounds for commitments. Indexed polynomials have *no*
+        // degree bounds because we know the committed index polynomial has the
+        // correct degree.
+        let index_info = index_vk.index_info;
+        let degree_bounds = vec![None; index_vk.index_comms.len()]
+            .into_iter()
+            .chain(AHPForR1CS::prover_first_round_degree_bounds(&index_info))
+            .chain(AHPForR1CS::prover_second_round_degree_bounds(&index_info))
+            .chain(AHPForR1CS::prover_third_round_degree_bounds(&index_info))
+            .collect::<Vec<_>>();
+
+        let polynomial_labels: Vec<String> = AHPForR1CS::<G::ScalarField>::polynomial_labels().collect();
+
+        // Gather commitments in one vector.
+        let commitments: Vec<_> = index_vk
+            .iter()
+            .chain(first_comms)
+            .chain(second_comms)
+            .chain(third_comms)
+            .cloned()
+            .zip(polynomial_labels)
+            .zip(degree_bounds)
+            .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
+            .collect();
+
+        let (query_set, verifier_state) = AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
+
+        fs_rng.absorb_bytes(&to_bytes![&proof.evaluations].unwrap());
+
+        let mut evaluations = Evaluations::new();
+        let mut evaluation_labels = Vec::new();
+        for (poly_label, (point_label, point)) in query_set.iter().cloned() {
+            if AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref())  {
                 evaluations.insert((poly_label, point), G::ScalarField::zero());
             } else {
                 evaluation_labels.push(((poly_label, point_label), point));
@@ -598,60 +862,26 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             evaluations.insert(((q.0).0, q.1), *eval);
         }
 
-        let evaluations_are_correct = if for_recursion {
 
-            let evaluations_are_correct = AHPForR1CS::verify_sumchecks(
-                &public_input,
-                &evaluations,
-                &verifier_state,
-            );
+        let lc_s = AHPForR1CS::construct_linear_combinations(
+            &public_input,
+            &evaluations,
+            &verifier_state,
+        )?;
 
-            if evaluations_are_correct.is_err()
-            {
-                eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
-                return Ok(false)
-            }
+        let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
-            let num_open_challenges: usize = commitments.len() * 2;
-
-            let mut opening_challenges = Vec::<G::ScalarField>::new();
-            opening_challenges
-                .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
-
-            let opening_challenges_f = |i| opening_challenges[i as usize];
-
-            PC::batch_check_individual_opening_challenges(
-                &index_vk.verifier_key,
-                &commitments,
-                &query_set,
-                &evaluations,
-                &proof.pc_proof.proof,
-                &opening_challenges_f,
-                rng,
-                &mut fs_rng
-            ).map_err(Error::from_pc_err)?
-        } else {
-
-            let lc_s = AHPForR1CS::construct_linear_combinations(
-                &public_input,
-                &evaluations,
-                &verifier_state,
-            )?;
-
-            let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
-
-            PC::check_combinations(
-                &index_vk.verifier_key,
-                &lc_s,
-                &commitments,
-                &query_set,
-                &evaluations,
-                &proof.pc_proof,
-                opening_challenge,
-                rng,
-                &mut fs_rng
-            ).map_err(Error::from_pc_err)?
-        };
+        let evaluations_are_correct = PC::check_combinations(
+            &index_vk.verifier_key,
+            &lc_s,
+            &commitments,
+            &query_set,
+            &evaluations,
+            &proof.pc_proof,
+            opening_challenge,
+            rng,
+            &mut fs_rng
+        ).map_err(Error::from_pc_err)?;
 
         if !evaluations_are_correct {
             eprintln!("PC::Check failed");

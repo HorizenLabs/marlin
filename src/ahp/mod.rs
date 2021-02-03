@@ -171,7 +171,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let z_1_at_g_beta = evals.get_lc_eval(&z_1, g_h * beta)?;
 
         let x_at_beta = x_domain
-            .evaluate_all_lagrange_coefficients(beta)
+            .evaluate_all_lagrange_polynomials(beta)
             .into_iter()
             .zip(public_input)
             .map(|(l, x)| l * &x)
@@ -327,7 +327,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
             // we compute the public input polynomial using FFT
             let x_at_beta = x_domain
-                .evaluate_all_lagrange_coefficients(beta)
+                .evaluate_all_lagrange_polynomials(beta)
                 .into_iter()
                 .zip(public_input)
                 .map(|(l, x)| l * &x)
