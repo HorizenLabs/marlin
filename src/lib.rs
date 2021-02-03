@@ -19,7 +19,7 @@ extern crate bench_utils;
 
 use algebra::{Field, ToConstraintField, ToBytes, to_bytes, AffineCurve};
 use std::marker::PhantomData;
-use poly_commit::{Evaluations, LabeledPolynomial, evaluate_query_set, BatchLCProof};
+use poly_commit::{Evaluations, LabeledPolynomial, BatchLCProof, evaluate_query_set_to_vec};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use poly_commit::fiat_shamir::FiatShamirRng;
 use r1cs_core::{ConstraintSynthesizer, SynthesisError};
@@ -392,20 +392,11 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
             let eval_time = start_timer!(|| "Evaluating polynomials over query set");
 
-            let evaluations = evaluate_query_set(
-                    polynomials.clone(), &query_set
-            );
-            debug_assert!(
-                AHPForR1CS::verify_sumchecks(
-                    &public_input,
-                    &evaluations,
-                    &verifier_state
-                ).is_ok()
-            );
-            let evaluations_vec = evaluations.into_iter().map(|(k, v)| { (k, v) }).collect::<Vec<_>>();
+            let evaluations = evaluate_query_set_to_vec(polynomials.clone(), &query_set);
+
             end_timer!(eval_time);
 
-            (query_set, evaluations_vec, None)
+            (query_set, evaluations, None)
 
         } else {
 
@@ -421,14 +412,14 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
             let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
             let mut evaluations = Vec::new();
-            for (label, (_, point)) in &query_set {
+            for (label, (point_label, point)) in &query_set {
                 let lc = lc_s
                     .iter()
                     .find(|lc| &lc.label == label)
                     .ok_or(ahp::Error::MissingEval(label.to_string()))?;
                 let eval = polynomials.get_lc_eval(&lc, *point)?;
                 if !AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                    evaluations.push(((label.to_string(), *point), eval));
+                    evaluations.push(((label.to_string(), point_label.to_string()), eval));
                 }
             }
             end_timer!(eval_time);
@@ -594,17 +585,17 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
-        for (poly_label, (_, point)) in query_set.iter().cloned() {
+        for (poly_label, (point_label, point)) in query_set.iter().cloned() {
             if !for_recursion && AHPForR1CS::<G::ScalarField>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref())  {
                 evaluations.insert((poly_label, point), G::ScalarField::zero());
             } else {
-                evaluation_labels.push(((poly_label, point), point));
+                evaluation_labels.push(((poly_label, point_label), point));
             }
         }
 
         evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
         for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
-            evaluations.insert(q.0, *eval);
+            evaluations.insert(((q.0).0, q.1), *eval);
         }
 
         let evaluations_are_correct = if for_recursion {
