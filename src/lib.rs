@@ -412,20 +412,11 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
         fs_rng.absorb_nonnative_field_elements(&evaluations);
 
-        let num_open_challenges: usize = polynomials.len() * 2;
-
-        let mut opening_challenges = Vec::<G::ScalarField>::new();
-        opening_challenges
-            .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
-
-        let opening_challenges_f = |i| opening_challenges[i as usize];
-
         let proof = PC::batch_open_individual_opening_challenges(
             &index_pk.committer_key,
             polynomials.clone(),
             &labeled_comms,
             &query_set,
-            &opening_challenges_f,
             &comm_rands,
             Some(zk_rng),
             &mut fs_rng
@@ -591,15 +582,12 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
         fs_rng.absorb_bytes(&to_bytes![&evaluations].unwrap());
 
-        let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
-
         let pc_proof = PC::open_combinations(
             &index_pk.committer_key,
             &lc_s,
             polynomials,
             &labeled_comms,
             &query_set,
-            opening_challenge,
             &comm_rands,
             Some(zk_rng),
             &mut fs_rng
@@ -751,21 +739,12 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             return Ok(false)
         }
 
-        let num_open_challenges: usize = commitments.len() * 2;
-
-        let mut opening_challenges = Vec::<G::ScalarField>::new();
-        opening_challenges
-            .append(&mut fs_rng.squeeze_128_bits_nonnative_field_elements(num_open_challenges));
-
-        let opening_challenges_f = |i| opening_challenges[i as usize];
-
         let openings_are_correct = PC::batch_check_individual_opening_challenges(
             &index_vk.verifier_key,
             &commitments,
             &query_set,
             &evaluations,
             &proof.pc_proof.proof,
-            &opening_challenges_f,
             rng,
             &mut fs_rng
         );
@@ -875,14 +854,11 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             evaluations.insert(((q.0).0, q.1), *eval);
         }
 
-
         let lc_s = AHPForR1CS::construct_linear_combinations(
             &public_input,
             &evaluations,
             &verifier_state,
         )?;
-
-        let opening_challenge: G::ScalarField = fs_rng.squeeze_128_bits_nonnative_field_elements(1)[0];
 
         let evaluations_are_correct = PC::check_combinations(
             &index_vk.verifier_key,
@@ -891,7 +867,6 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             &query_set,
             &evaluations,
             &proof.pc_proof,
-            opening_challenge,
             rng,
             &mut fs_rng
         ).map_err(Error::from_pc_err)?;

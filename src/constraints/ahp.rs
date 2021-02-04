@@ -1,41 +1,32 @@
 use algebra::{Field, PrimeField, AffineCurve};
-//use algebra_utils::polynomial::DensePolynomial;
 use r1cs_std::{
-    //alloc::AllocGadget,
-    //bits::boolean::Boolean,
-    //eq::EqGadget,
+    alloc::AllocGadget,
+    bits::boolean::Boolean,
+    eq::EqGadget,
     fields::{
         fp::FpGadget,
-        //FieldGadget,
+        FieldGadget,
         nonnative::nonnative_field_gadget::NonNativeFieldGadget
     },
-    //ToBitsGadget,
+    ToBitsGadget,
     to_field_gadget_vec::ToConstraintFieldGadget,
 };
 use r1cs_core::{ConstraintSystem, SynthesisError};
-/*use crate::{
-    ahp::Error,
-    constraints::{
+use crate::constraints::{
         data_structures::{PreparedIndexVerifierKeyGadget, ProofGadget},
         polynomial::AlgebraForAHP,
-    },
-};*/
+};
 use poly_commit::{
     PolynomialCommitment,
-    //LCTerm,
-    constraints::PolynomialCommitmentGadget,
-    /*constraints::{
-        EvaluationsGadget, LinearCombinationGadget, PolynomialCommitmentGadget,
+    constraints::{
+        EvaluationsGadget, PolynomialCommitmentGadget,
         PrepareGadget, QuerySetGadget,
-    },*/
+    },
     fiat_shamir::constraints::FiatShamirRngGadget,
-    //fiat_shamir::FiatShamirRng,
 };
 use std::marker::PhantomData;
-/*use std::{
-    //collections::{HashMap, HashSet},
-    marker::PhantomData,
-};*/
+use std::collections::{HashMap, HashSet};
+use poly_commit::constraints::LabeledPointGadget;
 
 #[derive(Clone)]
 pub struct VerifierStateGadget<SimulationF: PrimeField, ConstraintF: PrimeField> {
@@ -238,18 +229,17 @@ where
         Ok(new_state)
     }
 
-    /*pub fn verifier_decision(
-        cs: ConstraintSystemRef<<G::BaseField as Field>::BasePrimeField>>,
-        public_input: &[NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>],
-        evals: &HashMap<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>>,
-        state: VerifierStateGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-        domain_k_size_in_vk: &FpGadget<<G::BaseField as Field>::BasePrimeField>>,
-    ) -> Result<Vec<LinearCombinationGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>>, Error> {
+    pub fn verifier_decision<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(
+        mut cs:              CS,
+        public_input:        &[NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>],
+        evals:               &HashMap<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
+        state:               VerifierStateGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+        domain_k_size_in_vk: &FpGadget<<G::BaseField as Field>::BasePrimeField>,
+    ) -> Result<(), SynthesisError> {
         let VerifierStateGadget {
             domain_k_size,
             first_round_msg,
             second_round_msg,
-            gamma,
             ..
         } = state;
 
@@ -260,7 +250,9 @@ where
             "VerifierState should include second_round_msg when verifier_decision is called",
         );
 
-        let zero = NonNativeFieldGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::zero();
+        let zero = NonNativeFieldGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>::zero(
+            cs.ns(|| "hardcode zero")
+        )?;
 
         let VerifierFirstMsgGadget {
             alpha,
@@ -268,260 +260,286 @@ where
             eta_b,
             eta_c,
         } = first_round_msg;
-        let beta: NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> = second_round_msg.beta;
+        let beta: NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField> = second_round_msg.beta;
 
         let v_h_at_alpha = evals
             .get("vanishing_poly_h_alpha")
-            .ok_or_else(|| Error::MissingEval("vanishing_poly_h_alpha".to_string()))?;
+            .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        v_h_at_alpha.enforce_not_equal(&zero)?;
+        v_h_at_alpha.enforce_not_equal(cs.ns(|| "v_H_at_alpha != zero"), &zero)?;
 
         let v_h_at_beta = evals
             .get("vanishing_poly_h_beta")
-            .ok_or_else(|| Error::MissingEval("vanishing_poly_h_beta".to_string()))?;
-        v_h_at_beta.enforce_not_equal(&zero)?;
-
-        let gamma: NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> =
-            gamma.expect("VerifierState should include gamma when verifier_decision is called");
+            .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+        v_h_at_beta.enforce_not_equal(cs.ns(|| "v_H_at_beta != zero"), &zero)?;
 
         let t_at_beta = evals
             .get("t")
-            .ok_or_else(|| Error::MissingEval("t".to_string()))?;
-
-        let v_k_at_gamma = evals
-            .get("vanishing_poly_k_gamma")
-            .ok_or_else(|| Error::MissingEval("vanishing_poly_k_gamma".to_string()))?;
-
-        let r_alpha_at_beta = AlgebraForAHP::prepared_eval_bivariable_vanishing_polynomial(
-            &alpha,
-            &beta,
-            &v_h_at_alpha,
-            &v_h_at_beta,
-        )?;
-
-        let z_b_at_beta = evals
-            .get("z_b")
-            .ok_or_else(|| Error::MissingEval("z_b".to_string()))?;
-
-        let x_padded_len = public_input.len().next_power_of_two() as u64;
-
-        // We won't use FFT, but let the prover provide the commitment of the input poly
-        // which is easily computed from the input values using an MSM using as base
-        // points the commitments of the Lagrange polynomials (MinaProtocol);
-        // this takes number_of_inputs fbSM, expected to be cheaper than simulating FFT.
-        // For Tweedle, Mina's approach would cost 640 constraints per public input
-        // TODO: Count number of constraints to interpolate the x polynomial and take the cheapest
-        //       for number of public inputs increasing with powers of 2 (up to 256)
-        let mut interpolation_gadget = LagrangeInterpolationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::new(
-            G::ScalarField::get_root_of_unity(x_padded_len as usize).unwrap(),
-            x_padded_len,
-            public_input,
-        );
-
-        let f_x_at_beta = interpolation_gadget.interpolate_constraints(&beta)?;
-
-        let g_1_at_beta = evals
-            .get("g_1")
-            .ok_or_else(|| Error::MissingEval("g_1".to_string()))?;
-
-        // Compute linear combinations
-        let mut linear_combinations = Vec::new();
-
-        // Only compute for linear combination optimization.
-        let pow_x_at_beta = AlgebraForAHP::prepare(&beta, x_padded_len)?;
-        let v_x_at_beta = AlgebraForAHP::prepared_eval_vanishing_polynomial(&pow_x_at_beta)?;
+            .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
         // Outer sumcheck
-        let z_b_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "z_b".to_string(),
-            terms: vec![(None, "z_b".into(), false)],
-        };
+        let outer_sumcheck = {
 
-        let g_1_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "g_1".to_string(),
-            terms: vec![(None, "g_1".into(), false)],
-        };
+            let r_alpha_at_beta = AlgebraForAHP::prepared_eval_bivariable_vanishing_polynomial(
+                cs.ns(|| "r_alpha_at_beta"),
+                &alpha,
+                &beta,
+                &v_h_at_alpha,
+                &v_h_at_beta,
+            )?;
 
-        let t_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "t".to_string(),
-            terms: vec![(None, "t".into(), false)],
-        };
 
-        let eta_c_mul_z_b_at_beta = &eta_c * z_b_at_beta;
-        let eta_a_add_above = &eta_a + &eta_c_mul_z_b_at_beta;
+            let w_at_beta = evals
+                .get("w")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let outer_sumcheck_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "outer_sumcheck".to_string(),
-            terms: vec![
-                (None, "mask_poly".into(), false),
-                (
-                    Some(&r_alpha_at_beta * &eta_a_add_above),
-                    "z_a".into(),
-                    false,
-                ),
-                (
-                    Some(&r_alpha_at_beta * &eta_b * z_b_at_beta),
-                    LCTerm::One,
-                    false,
-                ),
-                (Some(t_at_beta * &v_x_at_beta), "w".into(), true),
-                (Some(t_at_beta * &f_x_at_beta), LCTerm::One, true),
-                (Some(v_h_at_beta.clone()), "h_1".into(), true),
-                (Some(&beta * g_1_at_beta), LCTerm::One, true),
-            ],
-        };
+            let z_a_at_beta = evals
+                .get("z_a")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        linear_combinations.push(g_1_lc_gadget);
-        linear_combinations.push(z_b_lc_gadget);
-        linear_combinations.push(t_lc_gadget);
-        linear_combinations.push(outer_sumcheck_lc_gadget);
+            let z_b_at_beta = evals
+                .get("z_b")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+
+            let x_at_beta = evals
+                .get("x")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+
+            let v_x_at_beta = {
+                let x_padded_len = public_input.len().next_power_of_two() as u64;
+                let pow_x_at_beta = AlgebraForAHP::prepare(cs.ns(|| "pow_x_at_beta"), &x_at_beta, x_padded_len)?;
+                AlgebraForAHP::prepared_eval_vanishing_polynomial(cs.ns(|| "v_X at beta"), &pow_x_at_beta)
+            }?;
+
+            let z_1_at_beta = evals
+                .get("z_1_beta")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+
+            let z_1_at_g_beta = evals
+                .get("z_1_g_beta")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+
+            let h_1_at_beta = evals
+                .get("h_1")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
+
+
+            let first_term = eta_c.mul(cs.ns(|| "eta_c * z_b_at_beta"), &z_b_at_beta)?
+                .add(cs.ns(|| "eta_a + eta_c * z_b_at_beta"), &eta_a)?
+                .mul(cs.ns(|| "r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta)"), &r_alpha_at_beta)?
+                .mul(cs.ns(|| "r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta) * z_a_at_beta"), &z_a_at_beta)?;
+
+            let second_term = r_alpha_at_beta.mul(cs.ns(|| "r_alpha_at_beta * eta_b"), &eta_b)?
+                .mul(cs.ns(|| "r_alpha_at_beta * eta_b * z_b_at_beta"), &z_b_at_beta)?;
+
+            let third_term = t_at_beta.mul(cs.ns(|| "t_at_beta * v_X_at_beta"), &v_x_at_beta)?
+                .mul(cs.ns(|| "t_at_beta * v_X_at_beta * w_at_beta"), &w_at_beta)?;
+
+            let fourth_term = t_at_beta.mul(cs.ns(|| "t_at_beta * x_at_beta"), &x_at_beta)?;
+
+            let fifth_term = v_h_at_beta.mul(cs.ns(|| "v_H_at_beta * h_1_at_beta"), &h_1_at_beta)?;
+
+            first_term.add(cs.ns(|| "first + second"), &second_term)?
+                .sub(cs.ns(|| "first + second - third"), &third_term)?
+                .sub(cs.ns(|| "first + second - third - fourth"), &fourth_term)?
+                .sub(cs.ns(|| "first + second - third - fourth - fifth"), &fifth_term)?
+                .add(cs.ns(|| "first + second - third - fourth - fifth + sixth"), &z_1_at_beta)?
+                .add(cs.ns(|| "first + second - third - fourth - fifth + sixth - seventh"), &z_1_at_g_beta)
+        }?;
+
+        outer_sumcheck.enforce_equal(cs.ns(|| "outer_sumcheck == 0"), &zero)?;
 
         // Inner sumcheck
-        let g_2_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "g_2".to_string(),
-            terms: vec![(None, "g_2".into(), false)],
-        };
+        let inner_sumcheck = {
 
-        let beta_alpha = &beta * &alpha;
+            let v_k_at_gamma = evals
+                .get("vanishing_poly_k_gamma")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let a_denom_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "a_denom".to_string(),
-            terms: vec![
-                (Some(beta_alpha.clone()), LCTerm::One, false),
-                (Some(alpha.clone()), "a_row".into(), true),
-                (Some(beta.clone()), "a_col".into(), true),
-                (None, "a_row_col".into(), false),
-            ],
-        };
+            let z_2_at_gamma = evals
+                .get("z_2_at_gamma")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let b_denom_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "b_denom".to_string(),
-            terms: vec![
-                (Some(beta_alpha.clone()), LCTerm::One, false),
-                (Some(alpha.clone()), "b_row".into(), true),
-                (Some(beta.clone()), "b_col".into(), true),
-                (None, "b_row_col".into(), false),
-            ],
-        };
+            let z_2_at_g_gamma = evals
+                .get("z_2_at_g_gamma")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let c_denom_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "c_denom".to_string(),
-            terms: vec![
-                (Some(beta_alpha), LCTerm::One, false),
-                (Some(alpha), "c_row".into(), true),
-                (Some(beta), "c_col".into(), true),
-                (None, "c_row_col".into(), false),
-            ],
-        };
+            let h_2_at_gamma = evals
+                .get("h_2")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let a_denom_at_gamma = evals.get(&a_denom_lc_gadget.label).unwrap();
-        let b_denom_at_gamma = evals.get(&b_denom_lc_gadget.label).unwrap();
-        let c_denom_at_gamma = evals.get(&c_denom_lc_gadget.label).unwrap();
-        let g_2_at_gamma = evals.get(&g_2_lc_gadget.label).unwrap();
+            let a_row_at_gamma = evals
+                .get("a_row")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let v_h_at_alpha_beta = v_h_at_alpha * v_h_at_beta;
+            let a_col_at_gamma = evals
+                .get("a_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let domain_k_size_gadget =
-            NonNativeFieldGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::new_witness(ark_relations::ns!(cs, "domain_k"), || {
-                Ok(G::ScalarField::from(domain_k_size as u128))
-            })?;
-        let inv_domain_k_size_gadget = domain_k_size_gadget.inverse()?;
+            let a_row_col_at_gamma = evals
+                .get("a_row_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let domain_k_size_bit_decomposition = domain_k_size_gadget.to_bits_le()?;
+            let a_val_at_gamma = evals
+                .get("a_val")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let domain_k_size_in_vk_bit_decomposition = domain_k_size_in_vk.to_bits_le()?;
+            let b_row_at_gamma = evals
+                .get("b_row")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        // This is not the most efficient implementation; an alternative is to check if the last limb of domain_k_size_gadget
-        // can be bit composed by the bits in domain_k_size_in_vk, which would save a lot of constraints.
-        // Nevertheless, doing so is using the nonnative field gadget in a non-black-box manner and is somehow not encouraged.
-        for (left, right) in domain_k_size_bit_decomposition
-            .iter()
-            .take(32)
-            .zip(domain_k_size_in_vk_bit_decomposition.iter())
-        {
-            left.enforce_equal(&right)?;
-        }
+            let b_col_at_gamma = evals
+                .get("b_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        for bit in domain_k_size_bit_decomposition.iter().skip(32) {
-            bit.enforce_equal(&Boolean::constant(false))?;
-        }
+            let b_row_col_at_gamma = evals
+                .get("b_row_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let b_expr_at_gamma_last_term =
-            (gamma * g_2_at_gamma) + (t_at_beta * &inv_domain_k_size_gadget);
-        let ab_denom_at_gamma = a_denom_at_gamma * b_denom_at_gamma;
+            let b_val_at_gamma = evals
+                .get("b_val")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let inner_sumcheck_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "inner_sumcheck".to_string(),
-            terms: vec![
-                (
-                    Some(&eta_a * b_denom_at_gamma * c_denom_at_gamma * &v_h_at_alpha_beta),
-                    "a_val".into(),
-                    false,
-                ),
-                (
-                    Some(&eta_b * a_denom_at_gamma * c_denom_at_gamma * &v_h_at_alpha_beta),
-                    "b_val".into(),
-                    false,
-                ),
-                (
-                    Some(&eta_c * &ab_denom_at_gamma * &v_h_at_alpha_beta),
-                    "c_val".into(),
-                    false,
-                ),
-                (
-                    Some(ab_denom_at_gamma * c_denom_at_gamma * &b_expr_at_gamma_last_term),
-                    LCTerm::One,
-                    true,
-                ),
-                (Some(v_k_at_gamma.clone()), "h_2".into(), true),
-            ],
-        };
+            let c_row_at_gamma = evals
+                .get("c_row")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        linear_combinations.push(g_2_lc_gadget);
-        linear_combinations.push(a_denom_lc_gadget);
-        linear_combinations.push(b_denom_lc_gadget);
-        linear_combinations.push(c_denom_lc_gadget);
-        linear_combinations.push(inner_sumcheck_lc_gadget);
+            let c_col_at_gamma = evals
+                .get("c_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        let vanishing_poly_h_alpha_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "vanishing_poly_h_alpha".to_string(),
-            terms: vec![(None, "vanishing_poly_h".into(), false)],
-        };
-        let vanishing_poly_h_beta_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "vanishing_poly_h_beta".to_string(),
-            terms: vec![(None, "vanishing_poly_h".into(), false)],
-        };
-        let vanishing_poly_k_gamma_lc_gadget = LinearCombinationGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> {
-            label: "vanishing_poly_k_gamma".to_string(),
-            terms: vec![(None, "vanishing_poly_k".into(), false)],
-        };
-        linear_combinations.push(vanishing_poly_h_alpha_lc_gadget);
-        linear_combinations.push(vanishing_poly_h_beta_lc_gadget);
-        linear_combinations.push(vanishing_poly_k_gamma_lc_gadget);
+            let c_row_col_at_gamma = evals
+                .get("c_row_col")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        linear_combinations.sort_by(|a, b| a.label.cmp(&b.label));
+            let c_val_at_gamma = evals
+                .get("c_val")
+                .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
-        Ok(linear_combinations)
+            let beta_alpha = beta.mul(cs.ns(|| "beta * alpha"), &alpha)?;
+
+            let a_denom_at_gamma = {
+                let alpha_a_row = alpha.mul(cs.ns(|| "alpha * a_row_at_gamma"), &a_row_at_gamma)?;
+                let beta_a_col = beta.mul(cs.ns(|| "beta * a_col_at_gamma"), &a_col_at_gamma)?;
+                beta_alpha
+                    .sub(cs.ns(|| "beta_alpha - (alpha * a_row_at_gamma)"), &alpha_a_row)?
+                    .sub(cs.ns(|| "beta_alpha - (alpha * a_row_at_gamma) - (beta * a_col_at_gamma)"), &beta_a_col)?
+                    .add(cs.ns(|| "beta_alpha - (alpha * a_row_at_gamma) - (beta * a_col_at_gamma) + a_row_col_at_gamma"), &a_row_col_at_gamma)
+            }?;
+
+            let b_denom_at_gamma = {
+                let alpha_b_row = alpha.mul(cs.ns(|| "alpha * b_row_at_gamma"), &b_row_at_gamma)?;
+                let beta_b_col = beta.mul(cs.ns(|| "beta * b_col_at_gamma"), &b_col_at_gamma)?;
+                beta_alpha
+                    .sub(cs.ns(|| "beta_alpha - (alpha * b_row_at_gamma)"), &alpha_b_row)?
+                    .sub(cs.ns(|| "beta_alpha - (alpha * b_row_at_gamma) - (beta * b_col_at_gamma)"), &beta_b_col)?
+                    .add(cs.ns(|| "beta_alpha - (alpha * b_row_at_gamma) - (beta * b_col_at_gamma) + b_row_col_at_gamma"), &b_row_col_at_gamma)
+            }?;
+
+            let c_denom_at_gamma = {
+                let alpha_c_row = alpha.mul(cs.ns(|| "alpha * c_row_at_gamma"), &c_row_at_gamma)?;
+                let beta_c_col = beta.mul(cs.ns(|| "beta * c_col_at_gamma"), &c_col_at_gamma)?;
+                beta_alpha
+                    .sub(cs.ns(|| "beta_alpha - (alpha * c_row_at_gamma)"), &alpha_c_row)?
+                    .sub(cs.ns(|| "beta_alpha - (alpha * c_row_at_gamma) - (beta * c_col_at_gamma)"), &beta_c_col)?
+                    .add(cs.ns(|| "beta_alpha - (alpha * c_row_at_gamma) - (beta * c_col_at_gamma) + c_row_col_at_gamma"), &c_row_col_at_gamma)
+            }?;
+
+            let b_at_gamma = a_denom_at_gamma
+                .mul(cs.ns(|| "a_denom_at_gamma * b_denom_at_gamma"), &b_denom_at_gamma)?
+                .mul(cs.ns(|| "a_denom_at_gamma * b_denom_at_gamma * c_denom_at_gamma"), &c_denom_at_gamma)?;
+
+            //TODO: What this piece of code is useful for ? Can't we just take the domain_k_size coming from
+            //      the vk ?
+            let inv_domain_k_size_gadget = {
+                let domain_k_size_gadget =
+                    NonNativeFieldGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>::alloc(
+                        cs.ns(|| "domain_k"),
+                        || {
+                            Ok(G::ScalarField::from(domain_k_size as u128))
+                        })?;
+
+                let mut domain_k_size_bit_decomposition = domain_k_size_gadget.to_bits_strict(
+                    cs.ns(|| "domain_k_size_gadget_to_bits_strict")
+                )?;
+                domain_k_size_bit_decomposition.reverse();
+
+                let mut domain_k_size_in_vk_bit_decomposition = domain_k_size_in_vk.to_bits_strict(
+                    cs.ns(|| "domain_k_size_in_vk_gadget_to_bits_strict")
+                )?;
+                domain_k_size_in_vk_bit_decomposition.reverse();
+
+                // This is not the most efficient implementation; an alternative is to check if the last limb of domain_k_size_gadget
+                // can be bit composed by the bits in domain_k_size_in_vk, which would save a lot of constraints.
+                // Nevertheless, doing so is using the nonnative field gadget in a non-black-box manner and is somehow not encouraged.
+                for (i, (left, right)) in domain_k_size_bit_decomposition
+                    .iter()
+                    .take(32)
+                    .zip(domain_k_size_in_vk_bit_decomposition.iter())
+                    .enumerate()
+                    {
+                        left.enforce_equal(cs.ns(|| format!("left_{} == right_{}", i, i)),&right)?;
+                    }
+
+                for (i, bit) in domain_k_size_bit_decomposition.iter().skip(32).enumerate() {
+                    bit.enforce_equal(cs.ns(|| format!("bit_{} == false", i)), &Boolean::constant(false))?;
+                }
+
+                domain_k_size_gadget.inverse(cs.ns(|| "inv_domain_k_size_gadget"))
+            }?;
+
+            let b_expr_at_gamma = {
+                let t_div_k = t_at_beta.mul(cs.ns(|| "t_at_beta * k_size_inv"), &inv_domain_k_size_gadget)?;
+                z_2_at_g_gamma
+                    .sub(cs.ns(|| "z_2_at_g_gamma - z_2_at_gamma"), &z_2_at_gamma)?
+                    .add(cs.ns(|| "(z_2_at_g_gamma - z_2_at_gamma) + (t_at_beta * k_size_inv)"), &t_div_k)?
+                    .mul(cs.ns(|| "b_at_gamma * ((z_2_at_g_gamma - z_2_at_gamma) + (t_at_beta * k_size_inv))"), &b_at_gamma)
+            }?;
+
+            let first_term = eta_a
+                .mul(cs.ns(|| "eta_a * b_denom_at_gamma"), &b_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_a * b_denom_at_gamma * c_denom_at_gamma"), &c_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_a * b_denom_at_gamma * c_denom_at_gamma * a_val_at_gamma"), &a_val_at_gamma)?;
+
+            let second_term = eta_b
+                .mul(cs.ns(|| "eta_b * a_denom_at_gamma"), &a_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_b * a_denom_at_gamma * c_denom_at_gamma"), &c_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_b * a_denom_at_gamma * c_denom_at_gamma * b_val_at_gamma"), &b_val_at_gamma)?;
+
+            let third_term = eta_c
+                .mul(cs.ns(|| "eta_c * b_denom_at_gamma"), &b_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_c * b_denom_at_gamma * a_denom_at_gamma"), &a_denom_at_gamma)?
+                .mul(cs.ns(|| "eta_c * b_denom_at_gamma * a_denom_at_gamma * c_val_at_gamma"), &c_val_at_gamma)?;
+
+            let fourth_term = v_h_at_alpha.mul(cs.ns(|| "v_H_at_alpha * v_H_at_beta"), &v_h_at_beta)?;
+            let fifth_term = b_expr_at_gamma;
+            let sixth_term = v_k_at_gamma.mul(cs.ns(|| "v_K_at_gamma * h_2_at_gamma"), &h_2_at_gamma)?;
+
+            first_term
+                .add(cs.ns(|| "first + second"), &second_term)?
+                .add(cs.ns(|| "first + second + third"), &third_term)?
+                .mul(cs.ns(|| "(first + second - third) * fourth"), &fourth_term)?
+                .sub(cs.ns(|| "(first + second - third) * fourth - fifth"), &fifth_term)?
+                .sub(cs.ns(|| "(first + second - third) * fourth - fifth + sixth"), &sixth_term)
+        }?;
+
+        inner_sumcheck.enforce_equal(cs.ns(|| "inner_sumcheck == 0"), &zero)?;
+
+        Ok(())
     }
 
-    #[tracing::instrument(target = "r1cs", skip(index_pvk, proof, state))]
-    #[allow(clippy::type_complexity)]
-    pub fn verifier_comm_query_eval_set<
-        PR: FiatShamirRng<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-        R: FiatShamirRngGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>, PR>,
-    >(
-        index_pvk: &PreparedIndexVerifierKeyGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>, PC, PCG, PR, R>,
-        proof: &ProofGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>, PC, PCG>,
-        state: &VerifierStateGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
+    pub fn verifier_comm_query_eval_set<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(
+        mut cs:     CS,
+        index_pvk:  &PreparedIndexVerifierKeyGadget<G, PC, PCG>,
+        proof:      &ProofGadget<G, PC, PCG>,
+        state:      &VerifierStateGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
     ) -> Result<
         (
-            usize,
-            usize,
             Vec<PCG::PreparedLabeledCommitmentGadget>,
-            QuerySetGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-            EvaluationsGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
+            QuerySetGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+            EvaluationsGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
         ),
-        Error,
+        SynthesisError,
     > {
         let VerifierStateGadget {
             first_round_msg,
@@ -549,100 +567,83 @@ where
 
         let gamma = gamma_ref;
 
-        let mut query_set_gadget = QuerySetGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> { 0: HashSet::new() };
+        let g_h_times_beta = index_pvk.domain_h_gen_gadget.mul(cs.ns(|| "g_H * beta"), &beta)?;
+        let g_k_times_gamma = index_pvk.domain_k_gen_gadget.mul(cs.ns(|| "g_K * gamma"), &gamma)?;
+
+        const TO_EVAL_AT_BETA: [&str; 7] = [
+            "x", "w", "z_a", "z_b", "t", "z_1", "h_1"
+        ];
+
+        const TO_EVAL_AT_GAMMA: [&str; 15] = [
+            "a_col", "a_row", "a_row_col", "a_val",
+            "b_col", "b_row", "b_row_col", "b_val",
+            "c_col", "c_row", "c_row_col", "c_val",
+            "z_2", "h_2", "vanishing_poly_k"
+        ];
+
+        // Construct QuerySetGadget
+        let mut query_set_gadget = QuerySetGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>{ 0: HashSet::new() };
+
+        for poly_label in TO_EVAL_AT_BETA.iter() {
+            query_set_gadget.0.insert((poly_label.to_string(), LabeledPointGadget("beta".to_string(), beta.clone())));
+        }
+
+        for poly_label in TO_EVAL_AT_GAMMA.iter() {
+            query_set_gadget.0.insert((poly_label.to_string(), LabeledPointGadget("gamma".to_string(), gamma.clone())));
+        }
 
         query_set_gadget
             .0
-            .insert(("g_1".to_string(), ("beta".to_string(), beta.clone())));
-        query_set_gadget
-            .0
-            .insert(("z_b".to_string(), ("beta".to_string(), beta.clone())));
-        query_set_gadget
-            .0
-            .insert(("t".to_string(), ("beta".to_string(), beta.clone())));
-        query_set_gadget.0.insert((
-            "outer_sumcheck".to_string(),
-            ("beta".to_string(), beta.clone()),
-        ));
-        query_set_gadget
-            .0
-            .insert(("g_2".to_string(), ("gamma".to_string(), gamma.clone())));
-        query_set_gadget
-            .0
-            .insert(("a_denom".to_string(), ("gamma".to_string(), gamma.clone())));
-        query_set_gadget
-            .0
-            .insert(("b_denom".to_string(), ("gamma".to_string(), gamma.clone())));
-        query_set_gadget
-            .0
-            .insert(("c_denom".to_string(), ("gamma".to_string(), gamma.clone())));
-        query_set_gadget.0.insert((
-            "inner_sumcheck".to_string(),
-            ("gamma".to_string(), gamma.clone()),
-        ));
+            .insert(("z_1".to_string(), LabeledPointGadget("g * beta".to_string(), g_h_times_beta.clone())));
 
-        query_set_gadget.0.insert((
-            "vanishing_poly_h_alpha".to_string(),
-            ("alpha".to_string(), alpha.clone()),
-        ));
-        query_set_gadget.0.insert((
-            "vanishing_poly_h_beta".to_string(),
-            ("beta".to_string(), beta.clone()),
-        ));
-        query_set_gadget.0.insert((
-            "vanishing_poly_k_gamma".to_string(),
-            ("gamma".to_string(), gamma.clone()),
-        ));
+        query_set_gadget
+            .0
+            .insert(("z_2".to_string(), LabeledPointGadget("g * gamma".to_string(), g_k_times_gamma.clone())));
 
-        let mut evaluations_gadget = EvaluationsGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>> { 0: HashMap::new() };
+        query_set_gadget
+            .0
+            .insert(("vanishing_poly_h".to_string(), LabeledPointGadget("alpha".to_string(), alpha.clone())));
 
-        let zero = NonNativeFieldGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::zero();
+        query_set_gadget
+            .0
+            .insert(("vanishing_poly_h".to_string(), LabeledPointGadget("beta".to_string(), beta.clone())));
+
+
+        //Construct EvaluationsGadget
+        let mut evaluations_gadget = EvaluationsGadget::<G::ScalarField, <G::BaseField as Field>::BasePrimeField>{ 0: HashMap::new() };
+
+        for poly_label in TO_EVAL_AT_BETA.iter() {
+            evaluations_gadget.0.insert(
+                LabeledPointGadget(poly_label.to_string(), beta.clone()),
+                (*proof.evaluations.get(&poly_label.to_string()).unwrap()).clone(),
+            );
+        }
+
+        for poly_label in TO_EVAL_AT_GAMMA.iter() {
+            evaluations_gadget.0.insert(
+                LabeledPointGadget(poly_label.to_string(), gamma.clone()),
+                (*proof.evaluations.get(&poly_label.to_string()).unwrap()).clone(),
+            );
+        }
 
         evaluations_gadget.0.insert(
-            ("g_1".to_string(), beta.clone()),
-            (*proof.evaluations.get("g_1").unwrap()).clone(),
+            LabeledPointGadget("z_1".to_string(), g_h_times_beta),
+            (*proof.evaluations.get("z_1_g_beta").unwrap()).clone(),
         );
+
         evaluations_gadget.0.insert(
-            ("z_b".to_string(), beta.clone()),
-            (*proof.evaluations.get("z_b").unwrap()).clone(),
+            LabeledPointGadget("z_2".to_string(), g_k_times_gamma),
+            (*proof.evaluations.get("z_2_g_gamma").unwrap()).clone(),
         );
+
         evaluations_gadget.0.insert(
-            ("t".to_string(), beta.clone()),
-            (*proof.evaluations.get("t").unwrap()).clone(),
-        );
-        evaluations_gadget
-            .0
-            .insert(("outer_sumcheck".to_string(), beta.clone()), zero.clone());
-        evaluations_gadget.0.insert(
-            ("g_2".to_string(), gamma.clone()),
-            (*proof.evaluations.get("g_2").unwrap()).clone(),
-        );
-        evaluations_gadget.0.insert(
-            ("a_denom".to_string(), gamma.clone()),
-            (*proof.evaluations.get("a_denom").unwrap()).clone(),
-        );
-        evaluations_gadget.0.insert(
-            ("b_denom".to_string(), gamma.clone()),
-            (*proof.evaluations.get("b_denom").unwrap()).clone(),
-        );
-        evaluations_gadget.0.insert(
-            ("c_denom".to_string(), gamma.clone()),
-            (*proof.evaluations.get("c_denom").unwrap()).clone(),
-        );
-        evaluations_gadget
-            .0
-            .insert(("inner_sumcheck".to_string(), gamma.clone()), zero);
-        evaluations_gadget.0.insert(
-            ("vanishing_poly_h_alpha".to_string(), alpha),
+            LabeledPointGadget("vanishing_poly_h".to_string(), alpha.clone()),
             (*proof.evaluations.get("vanishing_poly_h_alpha").unwrap()).clone(),
         );
+
         evaluations_gadget.0.insert(
-            ("vanishing_poly_h_beta".to_string(), beta),
+            LabeledPointGadget("vanishing_poly_h".to_string(), beta.clone()),
             (*proof.evaluations.get("vanishing_poly_h_beta").unwrap()).clone(),
-        );
-        evaluations_gadget.0.insert(
-            ("vanishing_poly_k_gamma".to_string(), gamma),
-            (*proof.evaluations.get("vanishing_poly_k_gamma").unwrap()).clone(),
         );
 
         let mut comms = vec![];
@@ -670,7 +671,7 @@ where
             .iter()
             .zip(INDEX_LABELS.iter())
         {
-            comms.push(PCG::create_prepared_labeled_commitment_gadget(
+            comms.push(PCG::create_prepared_labeled_commitment(
                 label.to_string(),
                 comm.clone(),
                 None,
@@ -678,78 +679,61 @@ where
         }
 
         // 4 comms for beta from the round 1
-        const PROOF_1_LABELS: [&str; 4] = ["w", "z_a", "z_b", "mask_poly"];
-        for (comm, label) in proof.commitments[0].iter().zip(PROOF_1_LABELS.iter()) {
-            let prepared_comm = if label.eq(&"z_b") {
-                PCG::PreparedCommitmentGadget::prepare_small(comm)?
-            } else {
-                PCG::PreparedCommitmentGadget::prepare(comm)?
-            };
-            comms.push(PCG::create_prepared_labeled_commitment_gadget(
+        const PROOF_1_LABELS: [&str; 4] = ["w", "z_a", "z_b", "x"];
+        for (i, (comm, label)) in proof.commitments[0].iter().zip(PROOF_1_LABELS.iter()).enumerate() {
+            let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
+                cs.ns(|| format!("prepare comm {}", i)),
+                comm
+            )?;
+
+            comms.push(PCG::create_prepared_labeled_commitment(
                 label.to_string(),
                 prepared_comm,
                 None,
             ));
         }
 
-        let h_minus_2 = index_pvk.domain_h_size_gadget.clone() - <G::BaseField as Field>::BasePrimeField>::from(2u128);
-
         // 3 comms for beta from the round 2
-        const PROOF_2_LABELS: [&str; 3] = ["t", "g_1", "h_1"];
-        let proof_2_bounds = [None, Some(h_minus_2), None];
-        for ((comm, label), bound) in proof.commitments[1]
+        const PROOF_2_LABELS: [&str; 3] = ["t", "z_1", "h_1"];
+        for (i, (comm, label)) in proof.commitments[1]
             .iter()
             .zip(PROOF_2_LABELS.iter())
-            .zip(proof_2_bounds.iter())
+            .enumerate()
         {
-            let prepared_comm = if label.eq(&"t") || label.eq(&"g_1") {
-                PCG::PreparedCommitmentGadget::prepare_small(comm)?
-            } else {
-                PCG::PreparedCommitmentGadget::prepare(comm)?
-            };
-            comms.push(PCG::create_prepared_labeled_commitment_gadget(
+            let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
+                cs.ns(|| format!("prepare comm {}", i)),
+                comm
+            )?;
+
+            comms.push(PCG::create_prepared_labeled_commitment(
                 label.to_string(),
                 prepared_comm,
-                (*bound).clone(),
+                None,
             ));
         }
-
-        let k_minus_2 = &index_pvk.domain_k_size_gadget - <G::BaseField as Field>::BasePrimeField>::from(2u128);
 
         // 2 comms for gamma from the round 3
-        const PROOF_3_LABELS: [&str; 2] = ["g_2", "h_2"];
-        let proof_3_bounds = [Some(k_minus_2), None];
-        for ((comm, label), bound) in proof.commitments[2]
+        const PROOF_3_LABELS: [&str; 2] = ["z_2", "h_2"];
+        for (i, (comm, label)) in proof.commitments[2]
             .iter()
             .zip(PROOF_3_LABELS.iter())
-            .zip(proof_3_bounds.iter())
+            .enumerate()
         {
-            let prepared_comm = if label.eq(&"g_2") {
-                PCG::PreparedCommitmentGadget::prepare_small(comm)?
-            } else {
-                PCG::PreparedCommitmentGadget::prepare(comm)?
-            };
-            comms.push(PCG::create_prepared_labeled_commitment_gadget(
+            let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
+                cs.ns(|| format!("prepare comm {}", i)),
+                comm
+            )?;
+            comms.push(PCG::create_prepared_labeled_commitment(
                 label.to_string(),
                 prepared_comm,
-                (*bound).clone(),
+                None,
             ));
         }
 
-        // Used for combining commitments and opening values in the traditional way
-        let num_opening_challenges = 7;
-
-        // Used to combine opening proofs (for batch proof verification)
-        // We won't need this, we will have just one opening proof, using
-        // multi-poly multi-point opening (Boneh, Gabizon, et al.)
-        let num_batching_rands = 2;
-
         Ok((
-            num_opening_challenges,
-            num_batching_rands,
             comms,
             query_set_gadget,
             evaluations_gadget,
         ))
-    }*/
+    }
 }

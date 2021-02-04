@@ -7,7 +7,8 @@ use crate::{
 };
 use poly_commit::{
     fiat_shamir::{constraints::FiatShamirRngGadget, FiatShamirRng},
-    constraints::{PolynomialCommitmentGadget, PrepareGadget}, PolynomialCommitment,
+    constraints::{PolynomialCommitmentGadget, PrepareGadget},
+    PolynomialCommitment
 };
 use r1cs_std::{
     alloc::{AllocGadget, ConstantGadget},
@@ -27,12 +28,14 @@ pub struct IndexVerifierKeyGadget<
     PC: PolynomialCommitment<G>,
     PCG: PolynomialCommitmentGadget<G, PC>,
 > {
-    pub domain_h_size: u64,
-    pub domain_k_size: u64,
+    pub domain_h_size:        u64,
+    pub domain_k_size:        u64,
     pub domain_h_size_gadget: FpGadget<<G::BaseField as Field>::BasePrimeField>,
     pub domain_k_size_gadget: FpGadget<<G::BaseField as Field>::BasePrimeField>,
-    pub index_comms: Vec<PCG::CommitmentGadget>,
-    pub verifier_key: PCG::VerifierKeyGadget,
+    pub domain_h_gen_gadget:  NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+    pub domain_k_gen_gadget:  NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+    pub index_comms:          Vec<PCG::CommitmentGadget>,
+    pub verifier_key:         PCG::VerifierKeyGadget,
 }
 
 impl<G, PC, PCG> IndexVerifierKeyGadget<G, PC, PCG>
@@ -87,11 +90,23 @@ where
             || Ok(<G::BaseField as Field>::BasePrimeField::from(domain_k.size() as u128)),
         )?;
 
+        let domain_h_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc domain_h_gen"),
+            || Ok(domain_h.group_gen()),
+        )?;
+
+        let domain_k_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc domain_k_gen"),
+            || Ok(domain_k.group_gen()),
+        )?;
+
         Ok(IndexVerifierKeyGadget {
             domain_h_size: domain_h.size() as u64,
             domain_k_size: domain_k.size() as u64,
             domain_h_size_gadget,
             domain_k_size_gadget,
+            domain_h_gen_gadget,
+            domain_k_gen_gadget,
             index_comms,
             verifier_key,
         })
@@ -132,11 +147,23 @@ where
             || Ok(<G::BaseField as Field>::BasePrimeField::from(domain_k.size() as u128)),
         )?;
 
+        let domain_h_gen_gadget = NonNativeFieldGadget::alloc_input(
+            cs.ns(|| "alloc input domain_h_gen"),
+            || Ok(domain_h.group_gen()),
+        )?;
+
+        let domain_k_gen_gadget = NonNativeFieldGadget::alloc_input(
+            cs.ns(|| "alloc input domain_k_gen"),
+            || Ok(domain_k.group_gen()),
+        )?;
+
         Ok(IndexVerifierKeyGadget {
             domain_h_size: domain_h.size() as u64,
             domain_k_size: domain_k.size() as u64,
             domain_h_size_gadget,
             domain_k_size_gadget,
+            domain_h_gen_gadget,
+            domain_k_gen_gadget,
             index_comms,
             verifier_key,
         })
@@ -155,6 +182,8 @@ impl<G, PC, PCG> ToBytesGadget<<G::BaseField as Field>::BasePrimeField> for Inde
 
         res.append(&mut self.domain_h_size_gadget.to_bytes(cs.ns(|| "domain_h_size to bytes"))?);
         res.append(&mut self.domain_k_size_gadget.to_bytes(cs.ns(|| "domain_k_size to bytes"))?);
+        res.append(&mut self.domain_h_gen_gadget.to_bytes(cs.ns(|| "domain_h_gen to bytes"))?);
+        res.append(&mut self.domain_k_gen_gadget.to_bytes(cs.ns(|| "domain_k_gen to bytes"))?);
         res.append(&mut self.verifier_key.to_bytes(cs.ns(|| "vk to bytes"))?);
 
         for (i, comm) in self.index_comms.iter().enumerate() {
@@ -170,6 +199,8 @@ impl<G, PC, PCG> ToBytesGadget<<G::BaseField as Field>::BasePrimeField> for Inde
 
         res.append(&mut self.domain_h_size_gadget.to_bytes_strict(cs.ns(|| "domain_h_size to bytes strict"))?);
         res.append(&mut self.domain_k_size_gadget.to_bytes_strict(cs.ns(|| "domain_k_size to bytes strict"))?);
+        res.append(&mut self.domain_h_gen_gadget.to_bytes_strict(cs.ns(|| "domain_h_gen to bytes strict"))?);
+        res.append(&mut self.domain_k_gen_gadget.to_bytes_strict(cs.ns(|| "domain_k_gen to bytes strict"))?);
         res.append(&mut self.verifier_key.to_bytes_strict(cs.ns(|| "vk to bytes strict"))?);
 
         for (i, comm) in self.index_comms.iter().enumerate() {
@@ -192,6 +223,8 @@ impl<G, PC, PCG> Clone for IndexVerifierKeyGadget<G, PC, PCG>
             domain_k_size: self.domain_k_size,
             domain_h_size_gadget: self.domain_h_size_gadget.clone(),
             domain_k_size_gadget: self.domain_k_size_gadget.clone(),
+            domain_h_gen_gadget: self.domain_h_gen_gadget.clone(),
+            domain_k_gen_gadget: self.domain_k_gen_gadget.clone(),
             index_comms: self.index_comms.clone(),
             verifier_key: self.verifier_key.clone(),
         }
@@ -207,6 +240,8 @@ pub struct PreparedIndexVerifierKeyGadget<
     pub domain_k_size: u64,
     pub domain_h_size_gadget:  FpGadget<<G::BaseField as Field>::BasePrimeField>,
     pub domain_k_size_gadget:  FpGadget<<G::BaseField as Field>::BasePrimeField>,
+    pub domain_h_gen_gadget:   NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+    pub domain_k_gen_gadget:   NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
     pub prepared_index_comms:  Vec<PCG::PreparedCommitmentGadget>,
     pub prepared_verifier_key: PCG::PreparedVerifierKeyGadget,
     pub fs_rng:                PCG::RandomOracleGadget,
@@ -224,6 +259,8 @@ impl<
             domain_k_size: self.domain_k_size,
             domain_h_size_gadget: self.domain_h_size_gadget.clone(),
             domain_k_size_gadget: self.domain_k_size_gadget.clone(),
+            domain_h_gen_gadget: self.domain_h_gen_gadget.clone(),
+            domain_k_gen_gadget: self.domain_k_gen_gadget.clone(),
             prepared_index_comms: self.prepared_index_comms.clone(),
             prepared_verifier_key: self.prepared_verifier_key.clone(),
             fs_rng: self.fs_rng.clone(),
@@ -305,6 +342,8 @@ where
             domain_k_size: vk.domain_k_size,
             domain_h_size_gadget: vk.domain_h_size_gadget.clone(),
             domain_k_size_gadget: vk.domain_k_size_gadget.clone(),
+            domain_h_gen_gadget: vk.domain_h_gen_gadget.clone(),
+            domain_k_gen_gadget: vk.domain_k_gen_gadget.clone(),
             prepared_index_comms,
             prepared_verifier_key,
             fs_rng,
@@ -382,11 +421,28 @@ where
             || Ok(<G::BaseField as Field>::BasePrimeField::from(obj.domain_k_size as u128)),
         )?;
 
+        let domain_h = get_best_evaluation_domain::<G::ScalarField>(obj.domain_h_size as usize)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+        let domain_k = get_best_evaluation_domain::<G::ScalarField>(obj.domain_k_size as usize)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+
+        let domain_h_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc domain_h_gen"),
+            || Ok(domain_h.group_gen()),
+        )?;
+
+        let domain_k_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc domain_k_gen"),
+            || Ok(domain_k.group_gen()),
+        )?;
+
         Ok(Self {
             domain_h_size: obj.domain_h_size,
             domain_k_size: obj.domain_k_size,
             domain_h_size_gadget,
             domain_k_size_gadget,
+            domain_h_gen_gadget,
+            domain_k_gen_gadget,
             prepared_index_comms,
             prepared_verifier_key,
             fs_rng,
@@ -449,11 +505,28 @@ where
             || Ok(<G::BaseField as Field>::BasePrimeField::from(obj.domain_k_size as u128)),
         )?;
 
+        let domain_h = get_best_evaluation_domain::<G::ScalarField>(obj.domain_h_size as usize)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+        let domain_k = get_best_evaluation_domain::<G::ScalarField>(obj.domain_k_size as usize)
+            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
+
+        let domain_h_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc input domain_h_gen"),
+            || Ok(domain_h.group_gen()),
+        )?;
+
+        let domain_k_gen_gadget = NonNativeFieldGadget::alloc(
+            cs.ns(|| "alloc input domain_k_gen"),
+            || Ok(domain_k.group_gen()),
+        )?;
+
         Ok(Self {
             domain_h_size: obj.domain_h_size,
             domain_k_size: obj.domain_k_size,
             domain_h_size_gadget,
             domain_k_size_gadget,
+            domain_h_gen_gadget,
+            domain_k_gen_gadget,
             prepared_index_comms,
             prepared_verifier_key,
             fs_rng,
@@ -469,7 +542,7 @@ pub struct ProofGadget<
     pub commitments:     Vec<Vec<PCG::CommitmentGadget>>,
     pub evaluations:     HashMap<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
     pub prover_messages: Vec<ProverMsgGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-    pub pc_batch_proof:  PCG::BatchLCProofGadget,
+    pub pc_batch_proof:  PCG::BatchProofGadget,
 }
 
 impl<G, PC, PCG> ProofGadget<G, PC, PCG>
@@ -482,7 +555,7 @@ where
         commitments:     Vec<Vec<PCG::CommitmentGadget>>,
         evaluations:     HashMap<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
         prover_messages: Vec<ProverMsgGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-        pc_batch_proof:  PCG::BatchLCProofGadget,
+        pc_batch_proof:  PCG::BatchProofGadget,
     ) -> Self {
         Self {
             commitments,
@@ -560,26 +633,24 @@ where
                 ProverMsgGadget { field_elements }
             }).collect();
 
-        let pc_batch_proof = PCG::BatchLCProofGadget::alloc(
+        let pc_batch_proof = PCG::BatchProofGadget::alloc(
             cs.ns(|| "alloc proof"),
-            || Ok(pc_proof),
+            || Ok(pc_proof.proof.clone()),
         )?;
 
         let mut evaluation_gadgets = HashMap::<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::new();
 
-        const ALL_POLYNOMIALS: [&str; 12] = [
-            "a_denom",
-            "b_denom",
-            "c_denom",
-            "t",
-            "vanishing_poly_h_alpha",
-            "vanishing_poly_h_beta",
-            "vanishing_poly_k_gamma",
-            "z_1_beta",
-            "z_1_g_beta",
-            "z_2_gamma",
-            "z_2_g_gamma",
-            "z_b",
+        const ALL_POLYNOMIALS: [&str; 26] = [
+            "a_col", "a_row", "a_row_col", "a_val",
+            "b_col", "b_row", "b_row_col", "b_val",
+            "c_col", "c_row", "c_row_col", "c_val",
+            "h_1", "h_2", "t",
+            "vanishing_poly_h_alpha", "vanishing_poly_h_beta",
+            "vanishing_poly_k",
+            "w", "x",
+            "z_1_beta", "z_1_g_beta",
+            "z_2_g_gamma", "z_2_gamma",
+            "z_a", "z_b",
         ];
 
         for (s, eval) in ALL_POLYNOMIALS.iter().zip(evaluation_gadgets_vec.iter()) {
@@ -651,26 +722,24 @@ where
                     ProverMsgGadget { field_elements }
                 }).collect();
 
-        let pc_batch_proof = PCG::BatchLCProofGadget::alloc_input(
+        let pc_batch_proof = PCG::BatchProofGadget::alloc_input(
             cs.ns(|| "alloc input proof"),
-            || Ok(pc_proof),
+            || Ok(pc_proof.proof.clone()),
         )?;
 
         let mut evaluation_gadgets = HashMap::<String, NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>::new();
 
-        const ALL_POLYNOMIALS: [&str; 12] = [
-            "a_denom",
-            "b_denom",
-            "c_denom",
-            "t",
-            "vanishing_poly_h_alpha",
-            "vanishing_poly_h_beta",
-            "vanishing_poly_k_gamma",
-            "z_1_beta",
-            "z_1_g_beta",
-            "z_2_gamma",
-            "z_2_g_gamma",
-            "z_b",
+        const ALL_POLYNOMIALS: [&str; 26] = [
+            "a_col", "a_row", "a_row_col", "a_val",
+            "b_col", "b_row", "b_row_col", "b_val",
+            "c_col", "c_row", "c_row_col", "c_val",
+            "h_1", "h_2", "t",
+            "vanishing_poly_h_alpha", "vanishing_poly_h_beta",
+            "vanishing_poly_k",
+            "w", "x",
+            "z_1_beta", "z_1_g_beta",
+            "z_2_g_gamma", "z_2_gamma",
+            "z_a", "z_b",
         ];
 
         for (s, eval) in ALL_POLYNOMIALS.iter().zip(evaluation_gadgets_vec.iter()) {
@@ -716,3 +785,36 @@ impl<SimulationF: PrimeField, ConstraintF: PrimeField> Clone
         }
     }
 }
+
+/*
+pub struct PublicInputs<G: AffineCurve, PC: PolynomialCommitment<G>> {
+    pub ins:                    Vec<G::ScalarField>,
+    pub lagrange_poly_comms:    Vec<PC::Commitment>
+}
+
+impl<G: AffineCurve, PC: PolynomialCommitment<G>> From<Vec<G::ScalarField>> for PublicInputs<G, PC> {
+    fn from(ins: Vec<G::ScalarField>, ck: &PC::CommitterKey) -> Self {
+        let domain_x = get_best_evaluation_domain::<G::ScalarField>(ins.len()).unwrap();
+        let lagrange_polys = domain_x
+            .compute_all_lagrange_polynomials()
+            .into_iter()
+            .enumerate()
+            .map(|(i, l_poly)| {
+            labeled_poly = LabeledPolynomial::new(
+                format!("lagrange_poly_{}", i).into(),
+                l_poly,
+                None,
+                None
+            )
+        }).collect::<Vec<_>>();
+
+        let lagrange_poly_comms = PC::commit(ck, lagrange_polys.into_iter(), None).unwrap();
+
+        Self { ins, lagrange_poly_comms }
+    }
+}
+
+pub struct PublicInputsGadget<G: AffineCurve, PC: PolynomialCommitment<G>, PCG: PolynomialCommitmentGadget<G, PC>> {
+    pub ins:                     Vec<NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
+    pub lagrange_poly_comms:     PC::CommitterKey,
+}*/
