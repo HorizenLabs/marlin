@@ -20,6 +20,7 @@ use crate::constraints::{
         data_structures::{IndexVerifierKeyGadget, PreparedIndexVerifierKeyGadget, ProofGadget},
 };
 use std::marker::PhantomData;
+use crate::constraints::data_structures::PublicInputsGadget;
 
 pub struct MarlinVerifierGadget<
     G: AffineCurve,
@@ -48,12 +49,24 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
     pub fn prepared_verify<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(
         mut cs: CS,
         index_pvk: &PreparedIndexVerifierKeyGadget<G, PC, PCG>,
-        public_input: &[NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>],
+        public_input: PublicInputsGadget<G, PC>,
         proof: &ProofGadget<G, PC, PCG>,
     ) -> Result<Boolean, SynthesisError> {
 
         // fs_rng has been already initialized with (PROTOCOL_NAME, vk_hash)
         let mut fs_rng = index_pvk.fs_rng.clone();
+
+        // Check commitment to the input poly
+        let one_ins = NonNativeFieldGadget::one(cs.ns(|| "pub ins 1"))?;
+        let mut formatted_public_input = vec![one_ins];
+        formatted_public_input.extend_from_slice(public_input.ins.as_slice());
+
+        PCG::verify_polynomial_commitment_from_lagrange_representation(
+            cs.ns(|| "check x_comm"),
+            &proof.commitments[0][3],
+            public_input.lagrange_poly_comms.as_slice(),
+            formatted_public_input.as_slice()
+        )?;
 
         let (_, verifier_state) = AHPForR1CSGadget::<G, PC, PCG>::verifier_first_round(
             cs.ns(|| "first round"),
@@ -79,12 +92,6 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
             &proof.commitments[2],
             &proof.prover_messages[2].field_elements,
         )?;
-
-        let one_ins = NonNativeFieldGadget::one(cs.ns(|| "pub ins 1"))?;
-        let mut formatted_public_input = vec![one_ins];
-        for elem in public_input.iter().cloned() {
-            formatted_public_input.push(elem);
-        }
 
         AHPForR1CSGadget::<G, PC, PCG>::verifier_decision(
             cs.ns(|| "verify sumchecks"),
@@ -133,7 +140,7 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
     pub fn verify<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(
         mut cs:         CS,
         index_vk:       &IndexVerifierKeyGadget<G, PC, PCG>,
-        public_input:   &[NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>],
+        public_input:   PublicInputsGadget<G, PC>,
         proof:          &ProofGadget<G, PC, PCG>,
     ) -> Result<Boolean, SynthesisError>
     {

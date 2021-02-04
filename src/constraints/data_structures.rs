@@ -786,21 +786,20 @@ impl<SimulationF: PrimeField, ConstraintF: PrimeField> Clone
     }
 }
 
-/*
-pub struct PublicInputs<G: AffineCurve, PC: PolynomialCommitment<G>> {
-    pub ins:                    Vec<G::ScalarField>,
-    pub lagrange_poly_comms:    Vec<PC::Commitment>
-}
+fn compute_lagrange_polynomials_commitments<
+    G: AffineCurve,
+    PC: PolynomialCommitment<G>
+>(ins_len: usize, ck: &PC::CommitterKey) -> Vec<PC::Commitment>
+{
+    use poly_commit::LabeledPolynomial;
 
-impl<G: AffineCurve, PC: PolynomialCommitment<G>> From<Vec<G::ScalarField>> for PublicInputs<G, PC> {
-    fn from(ins: Vec<G::ScalarField>, ck: &PC::CommitterKey) -> Self {
-        let domain_x = get_best_evaluation_domain::<G::ScalarField>(ins.len()).unwrap();
-        let lagrange_polys = domain_x
-            .compute_all_lagrange_polynomials()
-            .into_iter()
-            .enumerate()
-            .map(|(i, l_poly)| {
-            labeled_poly = LabeledPolynomial::new(
+    let domain_x = get_best_evaluation_domain::<G::ScalarField>(ins_len).unwrap();
+    let lagrange_polys = domain_x
+        .compute_all_lagrange_polynomials()
+        .into_iter()
+        .enumerate()
+        .map(|(i, l_poly)| {
+            LabeledPolynomial::new(
                 format!("lagrange_poly_{}", i).into(),
                 l_poly,
                 None,
@@ -808,13 +807,13 @@ impl<G: AffineCurve, PC: PolynomialCommitment<G>> From<Vec<G::ScalarField>> for 
             )
         }).collect::<Vec<_>>();
 
-        let lagrange_poly_comms = PC::commit(ck, lagrange_polys.into_iter(), None).unwrap();
-
-        Self { ins, lagrange_poly_comms }
-    }
+    PC::commit(ck, lagrange_polys.iter(), None).unwrap()
+        .0
+        .into_iter()
+        .map(|labeled_comm| { labeled_comm.commitment().clone() }).collect()
 }
 
-pub struct PublicInputsGadget<G: AffineCurve, PC: PolynomialCommitment<G>, PCG: PolynomialCommitmentGadget<G, PC>> {
+pub struct PublicInputsGadget<G: AffineCurve, PC: PolynomialCommitment<G>> {
     pub ins:                     Vec<NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField>>,
-    pub lagrange_poly_comms:     PC::CommitterKey,
-}*/
+    pub lagrange_poly_comms:     Vec<PC::Commitment>,
+}
