@@ -278,6 +278,7 @@ where
         <G::BaseField as Field>::BasePrimeField,
         FieldGadget = FpGadget<<G::BaseField as Field>::BasePrimeField>
     >,
+    PCG::RandomOracleGadget: ConstantGadget<PC::RandomOracle, <G::BaseField as Field>::BasePrimeField>
 {
     pub fn prepare<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(
         mut cs: CS,
@@ -364,6 +365,7 @@ where
         <G::BaseField as Field>::BasePrimeField,
         FieldGadget = FpGadget<<G::BaseField as Field>::BasePrimeField>
     >,
+    PCG::RandomOracleGadget: ConstantGadget<PC::RandomOracle, <G::BaseField as Field>::BasePrimeField>
 {
     fn alloc<F, T, CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(mut cs: CS, f: F) -> Result<Self, SynthesisError>
     where
@@ -786,7 +788,8 @@ impl<SimulationF: PrimeField, ConstraintF: PrimeField> Clone
     }
 }
 
-fn compute_lagrange_polynomials_commitments<
+#[allow(unused)]
+pub(crate) fn compute_lagrange_polynomials_commitments<
     G: AffineCurve,
     PC: PolynomialCommitment<G>
 >(ins_len: usize, ck: &PC::CommitterKey) -> Vec<PC::Commitment>

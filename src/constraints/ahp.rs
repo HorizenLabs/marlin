@@ -277,6 +277,8 @@ where
             .get("t")
             .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
+        //TODO: Optimize inner and outer sumcheck verification by using mul_without_reduce()
+
         // Outer sumcheck
         let outer_sumcheck = {
 
@@ -735,5 +737,106 @@ where
             query_set_gadget,
             evaluations_gadget,
         ))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use algebra::{AffineCurve, Field};
+    use poly_commit::{
+        constraints::PolynomialCommitmentGadget,
+        PolynomialCommitment, LabeledPolynomial
+    };
+    use algebra_utils::{get_best_evaluation_domain, DensePolynomial};
+    use rand::thread_rng;
+    use crate::constraints::data_structures::compute_lagrange_polynomials_commitments;
+    use r1cs_std::test_constraint_system::TestConstraintSystem;
+    use r1cs_core::ConstraintSystem;
+    use r1cs_std::fields::nonnative::nonnative_field_gadget::NonNativeFieldGadget;
+    use r1cs_std::alloc::AllocGadget;
+
+    fn poly_commit_lagrange<
+        G:   AffineCurve,
+        PC:  PolynomialCommitment<G>,
+        PCG: PolynomialCommitmentGadget<G, PC>
+    >(ck: &PC::CommitterKey, log_max_degree: usize)
+    {
+        let rng = &mut thread_rng();
+        for size in 1..log_max_degree {
+            let mut cs = TestConstraintSystem::<<G::BaseField as Field>::BasePrimeField>::new();
+            let domain = get_best_evaluation_domain::<G::ScalarField>(1 << size).unwrap();
+
+            // Sample a random polynomial and compute its commitment
+            let random_poly = DensePolynomial::<G::ScalarField>::rand((1 << size) - 1, rng);
+            let evaluations = random_poly.evaluate_over_domain_by_ref(domain).evals;
+            let expected_comm = PC::commit(
+                ck,
+                vec![LabeledPolynomial::new("test".into(), random_poly, None, None)].iter(),
+                Some(rng)
+            ).unwrap().0;
+
+            // Compute the commitments of the Lagrange polynomials over domain
+            let lagrange_comms = compute_lagrange_polynomials_commitments::<G, PC>(1 << size, ck);
+
+            // Alloc expected comm on the circuit
+            let expected_comm_gadget = PCG::CommitmentGadget::alloc(
+                cs.ns(|| "alloc expected commitment"),
+                || Ok(expected_comm[0].commitment().clone())
+            ).unwrap();
+
+            // Alloc poly evals
+            let mut poly_coords_gadget = Vec::new();
+            for (i, poly_coord) in evaluations.into_iter().enumerate() {
+                let t = NonNativeFieldGadget::alloc(
+                    cs.ns(|| format!("alloc poly coord {}", i)),
+                    || Ok(poly_coord)
+                ).unwrap();
+                poly_coords_gadget.push(t);
+            }
+
+            // Check equality
+            PCG::verify_polynomial_commitment_from_lagrange_representation(
+                cs.ns(|| "verify"),
+                &expected_comm_gadget,
+                lagrange_comms.as_slice(),
+                poly_coords_gadget.as_slice()
+            ).unwrap();
+
+            if !cs.is_satisfied() {
+                println!("{:?}", cs.which_is_unsatisfied());
+            }
+
+            assert!(cs.is_satisfied());
+        }
+    }
+
+    #[test]
+    fn test_verify_polynomial_commitment_from_lagrange_representation() {
+        use algebra::{
+            fields::tweedle::{
+                fq::Fq, fr::Fr,
+            }, curves::tweedle::dum::{
+                Affine, TweedledumParameters as AffineParameters
+            }
+        };
+        use primitives::crh::poseidon::parameters::TweedleFrPoseidonSponge;
+        use poly_commit::ipa_pc::InnerProductArgPC;
+        use poly_commit::ipa_pc::constraints::InnerProductArgPCGadget;
+        use r1cs_std::{
+            fields::fp::FpGadget,
+            groups::curves::short_weierstrass::short_weierstrass_jacobian::AffineGadget as GroupGadget
+        };
+        use r1cs_crypto::crh::poseidon::tweedle::TweedleFrPoseidonSpongeGadget;
+        use blake2::Blake2s;
+
+        type AffineGadget = GroupGadget<AffineParameters, Fr, FpGadget<Fr>>;
+        type IPAPC = InnerProductArgPC<Fr, Affine, TweedleFrPoseidonSponge>;
+        type IPAPCGadget = InnerProductArgPCGadget<Fq, Fr, Affine, AffineGadget, TweedleFrPoseidonSpongeGadget>;
+
+        let log_max_degree = 8;
+        let rng = &mut thread_rng();
+        let pp = IPAPC::setup::<_, Blake2s>(1 << log_max_degree, rng).unwrap();
+        let (ck, _) = IPAPC::trim(&pp, 1 << log_max_degree, 0, None).unwrap();
+        poly_commit_lagrange::<Affine, IPAPC, IPAPCGadget>(&ck, log_max_degree);
     }
 }

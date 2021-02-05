@@ -8,6 +8,7 @@ use r1cs_std::{
         FieldGadget, fp::FpGadget,
     },
     to_field_gadget_vec::ToConstraintFieldGadget,
+    alloc::ConstantGadget,
 };
 use r1cs_core::{ConstraintSystem, SynthesisError};
 use poly_commit::{
@@ -42,6 +43,7 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
             <G::BaseField as Field>::BasePrimeField,
             FieldGadget = FpGadget<<G::BaseField as Field>::BasePrimeField>
         >,
+        PCG::RandomOracleGadget: ConstantGadget<PC::RandomOracle, <G::BaseField as Field>::BasePrimeField>
 {
     pub const PROTOCOL_NAME: &'static [u8] = b"MARLIN-2019";
 

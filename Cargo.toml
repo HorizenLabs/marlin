@@ -35,9 +35,10 @@ digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }
 
 [dev-dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bls12_381", "jubjub", "bn_382", "tweedle"]}
-algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "bn_382", "tweedle" ] }
-r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bn_382", "tweedle"]}
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bls12_381", "jubjub", "tweedle"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "tweedle" ] }
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["tweedle"]}
+r1cs-crypto = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["tweedle"]}
 blake2 = { version = "0.8", default-features = false }
 criterion = "0.3"
 rand_xorshift = "0.2"
@@ -49,16 +50,10 @@ parallel = [ "algebra/parallel", "algebra-utils/parallel" ]
 gpu = [ "algebra-utils/gpu", "poly-commit/gpu" ]
 
 [[bench]]
-name = "bn382_test_circuits"
-path = "benches/bn_382_test_circuits.rs"
+name = "tweedle_test_circuits"
+path = "benches/tweedle_test_circuits.rs"
 harness = false
 required-features = ["parallel", "asm", "print-trace"]
-
-#[[bench]]
-#name = "tweedle_test_circuits"
-#path = "benches/tweedle_test_circuits.rs"
-#harness = false
-#required-features = ["parallel", "asm", "print-trace"]
 
 [profile.release]
 opt-level = 3

@@ -73,19 +73,19 @@ mod marlin {
 
     use algebra::UniformRand;
     use algebra::{
-        fields::bn_382::{
+        fields::tweedle::{
             fq::Fq, fr::Fr,
-        }, curves::bn_382::g::Affine
+        }, curves::tweedle::dum::Affine
     };
-    use primitives::crh::poseidon::parameters::BN382FrPoseidonSponge;
+    use primitives::crh::poseidon::parameters::tweedle::TweedleFrPoseidonSponge;
     use poly_commit::ipa_pc::InnerProductArgPC;
     use blake2::Blake2s;
     use std::ops::MulAssign;
     use rand::thread_rng;
 
-    type MultiPC = InnerProductArgPC<Fr, Affine, BN382FrPoseidonSponge>;
-    type MarlinInstDefault = Marlin<Affine, MultiPC, BN382FrPoseidonSponge, MarlinDefaultConfig>;
-    type MarlinInstRecursive = Marlin<Affine, MultiPC, BN382FrPoseidonSponge, MarlinRecursiveConfig>;
+    type MultiPC = InnerProductArgPC<Fr, Affine, TweedleFrPoseidonSponge>;
+    type MarlinInstDefault = Marlin<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>;
+    type MarlinInstRecursive = Marlin<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>;
 
     fn test_circuit(num_constraints: usize, num_variables: usize) {
         let rng = &mut thread_rng();
