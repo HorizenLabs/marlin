@@ -19,12 +19,12 @@ license = "MIT/Apache-2.0"
 edition = "2018"
 
 [dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["parallel", "bls12_381", "jubjub", "bn_382", "tweedle"]}
-algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "parallel", "fft", "bn_382", "tweedle" ] }
-primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bn_382"]}
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["parallel"]}
+algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "parallel", "fft"] }
+primitives = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative"}
 bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative"}
 r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative"}
-r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["nonnative", "density-optimized", "bn_382", "tweedle"]}
+r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["nonnative", "density-optimized"]}
 
 poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "full_verifier" }
 
@@ -35,7 +35,7 @@ digest = { version = "0.8" }
 derivative = { version = "2", features = ["use_core"] }
 
 [dev-dependencies]
-algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["bls12_381", "jubjub", "tweedle"]}
+algebra = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["tweedle"]}
 algebra-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = [ "tweedle" ] }
 r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["tweedle"]}
 r1cs-crypto = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "nonnative", features = ["tweedle"]}
@@ -46,7 +46,6 @@ rand_xorshift = "0.2"
 [features]
 print-trace = [ "bench-utils/print-trace" ]
 asm = [ "algebra/llvm_asm" ]
-parallel = [ "algebra/parallel", "algebra-utils/parallel" ]
 gpu = [ "algebra-utils/gpu", "poly-commit/gpu" ]
 
 [[bench]]
