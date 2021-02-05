@@ -127,7 +127,7 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
             &evals_vec
         )?;
 
-        PCG::prepared_batch_check_individual_opening_challenges(
+        /*PCG::prepared_batch_check_individual_opening_challenges(
             cs.ns(|| "pc_check"),
             &index_pvk.prepared_verifier_key,
             comms.as_slice(),
@@ -135,8 +135,8 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
             &evaluations,
             &proof.pc_batch_proof,
             &mut fs_rng
-        )
-        //Ok(Boolean::Constant(true))
+        )*/
+        Ok(Boolean::Constant(true))
     }
 
     pub fn verify<CS: ConstraintSystem<<G::BaseField as Field>::BasePrimeField>>(

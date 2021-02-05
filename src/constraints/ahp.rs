@@ -262,6 +262,7 @@ where
         } = first_round_msg;
         let beta: NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField> = second_round_msg.beta;
 
+        //TODO: Return the missing value too
         let v_h_at_alpha = evals
             .get("vanishing_poly_h_alpha")
             .ok_or_else(|| SynthesisError::AssignmentMissing)?;
@@ -341,12 +342,14 @@ where
 
             let fifth_term = v_h_at_beta.mul(cs.ns(|| "v_H_at_beta * h_1_at_beta"), &h_1_at_beta)?;
 
-            first_term.add(cs.ns(|| "first + second"), &second_term)?
-                .sub(cs.ns(|| "first + second - third"), &third_term)?
-                .sub(cs.ns(|| "first + second - third - fourth"), &fourth_term)?
-                .sub(cs.ns(|| "first + second - third - fourth - fifth"), &fifth_term)?
-                .add(cs.ns(|| "first + second - third - fourth - fifth + sixth"), &z_1_at_beta)?
-                .add(cs.ns(|| "first + second - third - fourth - fifth + sixth - seventh"), &z_1_at_g_beta)
+            let mut outer_sumcheck_cs = cs.ns(|| "outer_sumcheck");
+
+            first_term.add(outer_sumcheck_cs.ns(|| "first + second"), &second_term)?
+                .sub(outer_sumcheck_cs.ns(|| "first + second - third"), &third_term)?
+                .sub(outer_sumcheck_cs.ns(|| "first + second - third - fourth"), &fourth_term)?
+                .sub(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth"), &fifth_term)?
+                .add(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth + sixth"), &z_1_at_beta)?
+                .add(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth + sixth - seventh"), &z_1_at_g_beta)
         }?;
 
         outer_sumcheck.enforce_equal(cs.ns(|| "outer_sumcheck == 0"), &zero)?;
@@ -355,15 +358,15 @@ where
         let inner_sumcheck = {
 
             let v_k_at_gamma = evals
-                .get("vanishing_poly_k_gamma")
+                .get("vanishing_poly_k")
                 .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
             let z_2_at_gamma = evals
-                .get("z_2_at_gamma")
+                .get("z_2_gamma")
                 .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
             let z_2_at_g_gamma = evals
-                .get("z_2_at_g_gamma")
+                .get("z_2_g_gamma")
                 .ok_or_else(|| SynthesisError::AssignmentMissing)?;
 
             let h_2_at_gamma = evals
@@ -517,12 +520,14 @@ where
             let fifth_term = b_expr_at_gamma;
             let sixth_term = v_k_at_gamma.mul(cs.ns(|| "v_K_at_gamma * h_2_at_gamma"), &h_2_at_gamma)?;
 
+            let mut inner_sumcheck_cs = cs.ns(|| "inner_sumcheck");
+
             first_term
-                .add(cs.ns(|| "first + second"), &second_term)?
-                .add(cs.ns(|| "first + second + third"), &third_term)?
-                .mul(cs.ns(|| "(first + second - third) * fourth"), &fourth_term)?
-                .sub(cs.ns(|| "(first + second - third) * fourth - fifth"), &fifth_term)?
-                .sub(cs.ns(|| "(first + second - third) * fourth - fifth + sixth"), &sixth_term)
+                .add(inner_sumcheck_cs.ns(|| "first + second"), &second_term)?
+                .add(inner_sumcheck_cs.ns(|| "first + second + third"), &third_term)?
+                .mul(inner_sumcheck_cs.ns(|| "(first + second - third) * fourth"), &fourth_term)?
+                .sub(inner_sumcheck_cs.ns(|| "(first + second - third) * fourth - fifth"), &fifth_term)?
+                .sub(inner_sumcheck_cs.ns(|| "(first + second - third) * fourth - fifth + sixth"), &sixth_term)
         }?;
 
         inner_sumcheck.enforce_equal(cs.ns(|| "inner_sumcheck == 0"), &zero)?;
