@@ -262,7 +262,7 @@ where
         } = first_round_msg;
         let beta: NonNativeFieldGadget<G::ScalarField, <G::BaseField as Field>::BasePrimeField> = second_round_msg.beta;
 
-        //TODO: Return the missing value too
+        //TODO: Return the missing value too instead of a generic AssignmentMissing
         let v_h_at_alpha = evals
             .get("vanishing_poly_h_alpha")
             .ok_or_else(|| SynthesisError::AssignmentMissing)?;
@@ -577,15 +577,15 @@ where
         let g_h_times_beta = index_pvk.domain_h_gen_gadget.mul(cs.ns(|| "g_H * beta"), &beta)?;
         let g_k_times_gamma = index_pvk.domain_k_gen_gadget.mul(cs.ns(|| "g_K * gamma"), &gamma)?;
 
-        const TO_EVAL_AT_BETA: [&str; 7] = [
-            "x", "w", "z_a", "z_b", "t", "z_1", "h_1"
+        const TO_EVAL_AT_BETA: [&str; 6] = [
+            "x", "w", "z_a", "z_b", "t", "h_1"
         ];
 
-        const TO_EVAL_AT_GAMMA: [&str; 15] = [
+        const TO_EVAL_AT_GAMMA: [&str; 14] = [
             "a_col", "a_row", "a_row_col", "a_val",
             "b_col", "b_row", "b_row_col", "b_val",
             "c_col", "c_row", "c_row_col", "c_val",
-            "z_2", "h_2", "vanishing_poly_k"
+            "h_2", "vanishing_poly_k"
         ];
 
         // Construct QuerySetGadget
@@ -601,7 +601,15 @@ where
 
         query_set_gadget
             .0
+            .insert(("z_1".to_string(), LabeledPointGadget("beta".to_string(), beta.clone())));
+
+        query_set_gadget
+            .0
             .insert(("z_1".to_string(), LabeledPointGadget("g * beta".to_string(), g_h_times_beta.clone())));
+
+        query_set_gadget
+            .0
+            .insert(("z_2".to_string(), LabeledPointGadget("gamma".to_string(), gamma.clone())));
 
         query_set_gadget
             .0
@@ -634,8 +642,18 @@ where
         }
 
         evaluations_gadget.0.insert(
+            LabeledPointGadget("z_1".to_string(), beta.clone()),
+            (*proof.evaluations.get("z_1_beta").unwrap()).clone(),
+        );
+
+        evaluations_gadget.0.insert(
             LabeledPointGadget("z_1".to_string(), g_h_times_beta),
             (*proof.evaluations.get("z_1_g_beta").unwrap()).clone(),
+        );
+
+        evaluations_gadget.0.insert(
+            LabeledPointGadget("z_2".to_string(), gamma),
+            (*proof.evaluations.get("z_2_gamma").unwrap()).clone(),
         );
 
         evaluations_gadget.0.insert(
@@ -644,12 +662,12 @@ where
         );
 
         evaluations_gadget.0.insert(
-            LabeledPointGadget("vanishing_poly_h".to_string(), alpha.clone()),
+            LabeledPointGadget("vanishing_poly_h".to_string(), alpha),
             (*proof.evaluations.get("vanishing_poly_h_alpha").unwrap()).clone(),
         );
 
         evaluations_gadget.0.insert(
-            LabeledPointGadget("vanishing_poly_h".to_string(), beta.clone()),
+            LabeledPointGadget("vanishing_poly_h".to_string(), beta),
             (*proof.evaluations.get("vanishing_poly_h_beta").unwrap()).clone(),
         );
 
@@ -689,7 +707,7 @@ where
         const PROOF_1_LABELS: [&str; 4] = ["w", "z_a", "z_b", "x"];
         for (i, (comm, label)) in proof.commitments[0].iter().zip(PROOF_1_LABELS.iter()).enumerate() {
             let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
-                cs.ns(|| format!("prepare comm {}", i)),
+                cs.ns(|| format!("prepare comm 1_{}", i)),
                 comm
             )?;
 
@@ -708,7 +726,7 @@ where
             .enumerate()
         {
             let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
-                cs.ns(|| format!("prepare comm {}", i)),
+                cs.ns(|| format!("prepare comm 2_{}", i)),
                 comm
             )?;
 
@@ -727,7 +745,7 @@ where
             .enumerate()
         {
             let prepared_comm = PCG::PreparedCommitmentGadget::prepare(
-                cs.ns(|| format!("prepare comm {}", i)),
+                cs.ns(|| format!("prepare comm 3_{}", i)),
                 comm
             )?;
             comms.push(PCG::create_prepared_labeled_commitment(

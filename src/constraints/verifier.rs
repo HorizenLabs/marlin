@@ -87,7 +87,7 @@ impl<G, PC, PCG> MarlinVerifierGadget<G, PC, PCG>
             &proof.prover_messages[1].field_elements,
         )?;
 
-        let _verifier_state = AHPForR1CSGadget::<G, PC, PCG>::verifier_third_round(
+        let verifier_state = AHPForR1CSGadget::<G, PC, PCG>::verifier_third_round(
             cs.ns(|| "third round"),
             verifier_state.clone(),
             &mut fs_rng,
