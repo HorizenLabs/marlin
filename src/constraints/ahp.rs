@@ -859,6 +859,10 @@ mod test {
         let rng = &mut thread_rng();
         let pp = IPAPC::setup::<_, Blake2s>(1 << log_max_degree, rng).unwrap();
         let (ck, _) = IPAPC::trim(&pp, 1 << log_max_degree, 0, None).unwrap();
-        poly_commit_lagrange::<Affine, IPAPC, IPAPCGadget>(&ck, log_max_degree);
+
+        let samples = 10;
+        for _ in 0..samples {
+            poly_commit_lagrange::<Affine, IPAPC, IPAPCGadget>(&ck, log_max_degree);
+        }
     }
 }
