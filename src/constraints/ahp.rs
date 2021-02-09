@@ -291,7 +291,6 @@ where
                 &v_h_at_beta,
             )?;
 
-
             let w_at_beta = evals
                 .get("w")
                 .ok_or_else(|| SynthesisError::AssignmentMissing)?;
@@ -310,8 +309,8 @@ where
 
             let v_x_at_beta = {
                 let x_padded_len = public_input.len().next_power_of_two() as u64;
-                let pow_x_at_beta = AlgebraForAHP::prepare(cs.ns(|| "pow_x_at_beta"), &x_at_beta, x_padded_len)?;
-                AlgebraForAHP::prepared_eval_vanishing_polynomial(cs.ns(|| "v_X at beta"), &pow_x_at_beta)
+                let beta_to_x_size = AlgebraForAHP::prepare(cs.ns(|| "beta^N"), &beta, x_padded_len)?;
+                AlgebraForAHP::prepared_eval_vanishing_polynomial(cs.ns(|| "beta^N - 1"), &beta_to_x_size)
             }?;
 
             let z_1_at_beta = evals
@@ -325,7 +324,6 @@ where
             let h_1_at_beta = evals
                 .get("h_1")
                 .ok_or_else(|| SynthesisError::AssignmentMissing)?;
-
 
             let first_term = eta_c.mul(cs.ns(|| "eta_c * z_b_at_beta"), &z_b_at_beta)?
                 .add(cs.ns(|| "eta_a + eta_c * z_b_at_beta"), &eta_a)?
@@ -344,12 +342,13 @@ where
 
             let mut outer_sumcheck_cs = cs.ns(|| "outer_sumcheck");
 
-            first_term.add(outer_sumcheck_cs.ns(|| "first + second"), &second_term)?
+            first_term
+                .add(outer_sumcheck_cs.ns(|| "first + second"), &second_term)?
                 .sub(outer_sumcheck_cs.ns(|| "first + second - third"), &third_term)?
                 .sub(outer_sumcheck_cs.ns(|| "first + second - third - fourth"), &fourth_term)?
                 .sub(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth"), &fifth_term)?
                 .add(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth + sixth"), &z_1_at_beta)?
-                .add(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth + sixth - seventh"), &z_1_at_g_beta)
+                .sub(outer_sumcheck_cs.ns(|| "first + second - third - fourth - fifth + sixth - seventh"), &z_1_at_g_beta)
         }?;
 
         outer_sumcheck.enforce_equal(cs.ns(|| "outer_sumcheck == 0"), &zero)?;

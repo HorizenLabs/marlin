@@ -2,10 +2,10 @@
 mod tests {
     use algebra::{fields::tweedle::{
         fq::Fq, fr::Fr,
-    }, curves::tweedle::dee::{
-        Affine, TweedledeeParameters as AffineParameters
+    }, curves::tweedle::dum::{
+        Affine, TweedledumParameters as AffineParameters
     }, Field, UniformRand};
-    use primitives::crh::poseidon::parameters::TweedleFqPoseidonSponge;
+    use primitives::crh::poseidon::parameters::TweedleFrPoseidonSponge;
     use poly_commit::ipa_pc::InnerProductArgPC;
     use poly_commit::ipa_pc::constraints::InnerProductArgPCGadget;
     use r1cs_std::{
@@ -17,7 +17,7 @@ mod tests {
         test_constraint_system::TestConstraintSystem,
         prelude::*,
     };
-    use r1cs_crypto::crh::poseidon::tweedle::TweedleFqPoseidonSpongeGadget;
+    use r1cs_crypto::crh::poseidon::tweedle::TweedleFrPoseidonSpongeGadget;
     use r1cs_core::{ConstraintSynthesizer, ConstraintSystem, SynthesisError};
     use crate::{
         Marlin, MarlinRecursiveConfig,
@@ -33,10 +33,10 @@ mod tests {
     use std::ops::MulAssign;
     use blake2::Blake2s;
 
-    type AffineGadget = GroupGadget<AffineParameters, Fq, FpGadget<Fq>>;
-    type IPAPC = InnerProductArgPC<Fq, Affine, TweedleFqPoseidonSponge>;
-    type IPAPCGadget = InnerProductArgPCGadget<Fr, Fq, Affine, AffineGadget, TweedleFqPoseidonSpongeGadget>;
-    type MarlinInst = Marlin<Affine, IPAPC, TweedleFqPoseidonSponge, MarlinRecursiveConfig>;
+    type AffineGadget = GroupGadget<AffineParameters, Fr, FpGadget<Fr>>;
+    type IPAPC = InnerProductArgPC<Fr, Affine, TweedleFrPoseidonSponge>;
+    type IPAPCGadget = InnerProductArgPCGadget<Fq, Fr, Affine, AffineGadget, TweedleFrPoseidonSpongeGadget>;
+    type MarlinInst = Marlin<Affine, IPAPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>;
 
     #[derive(Copy, Clone)]
     struct Circuit<F: Field> {
@@ -111,90 +111,91 @@ mod tests {
         let num_constraints = 100;
         let num_variables = 25;
 
-        let a = Fr::rand(rng);
-        let b = Fr::rand(rng);
-        let mut c = a;
-        c.mul_assign(&b);
+        for _ in 0..10 {
+            let a = Fq::rand(rng);
+            let b = Fq::rand(rng);
+            let mut c = a;
+            c.mul_assign(&b);
 
-        let circ = Circuit {
-            a: Some(a),
-            b: Some(b),
-            num_constraints,
-            num_variables,
-        };
+            let circ = Circuit {
+                a: Some(a),
+                b: Some(b),
+                num_constraints,
+                num_variables,
+            };
 
-        let (index_pk, index_vk) = MarlinInst::index(&universal_srs, circ).unwrap();
-        println!("Called index");
+            let (index_pk, index_vk) = MarlinInst::index(&universal_srs, circ).unwrap();
+            println!("Called index");
 
-        let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
-        println!("Called prover");
+            let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
+            println!("Called prover");
 
-        assert!(MarlinInst::verify(&index_vk, &[c], &proof, rng).unwrap());
-        println!("Called verifier");
-        println!("\nShould not verify (i.e. verifier messages should print below):");
-        assert!(!MarlinInst::verify(&index_vk, &[a], &proof, rng).unwrap());
+            assert!(MarlinInst::verify(&index_vk, &[c], &proof, rng).unwrap());
+            println!("Called verifier");
 
-        // Native works; now convert to the constraint world!
+            // Native works; now convert to the constraint world!
 
-        let mut cs = TestConstraintSystem::<Fq>::new();
+            let mut cs = TestConstraintSystem::<Fr>::new();
 
-        // BEGIN: ivk to ivk_gadget
-        let ivk_gadget: IndexVerifierKeyGadget<Affine, IPAPC, IPAPCGadget> =
-            IndexVerifierKeyGadget::alloc(cs.ns(|| "alloc index vk"), || Ok(index_vk)).unwrap();
-        // END: ivk to ivk_gadget
+            // BEGIN: ivk to ivk_gadget
+            let ivk_gadget: IndexVerifierKeyGadget<Affine, IPAPC, IPAPCGadget> =
+                IndexVerifierKeyGadget::alloc(cs.ns(|| "alloc index vk"), || Ok(index_vk)).unwrap();
+            // END: ivk to ivk_gadget
 
-        // BEGIN: public input to public_input_gadget
-        let public_input: Vec<Fr> = vec![c];
+            // BEGIN: public input to public_input_gadget
+            let public_input: Vec<Fq> = vec![c];
 
-        let ins: Vec<NonNativeFieldGadget<Fr, Fq>> = public_input
-            .iter()
-            .enumerate()
-            .map(|(i, x)| {
-                NonNativeFieldGadget::alloc_input(
-                    cs.ns(|| format!("alloc public input {}", i)),
-                    || Ok(x)
-                ).unwrap()
-            })
-            .collect();
+            let ins: Vec<NonNativeFieldGadget<Fq, Fr>> = public_input
+                .iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    NonNativeFieldGadget::alloc_input(
+                        cs.ns(|| format!("alloc public input {}", i)),
+                        || Ok(x)
+                    ).unwrap()
+                })
+                .collect();
 
-        // Collect Lagrange Polynomials commitments
-        let lagrange_poly_comms = compute_lagrange_polynomials_commitments::<Affine, IPAPC>(
-            (public_input.len() + 1).next_power_of_two(),
-            &index_pk.committer_key
-        );
+            // Collect Lagrange Polynomials commitments
+            let lagrange_poly_comms = compute_lagrange_polynomials_commitments::<Affine, IPAPC>(
+                (public_input.len() + 1).next_power_of_two(),
+                &index_pk.committer_key
+            );
 
-        // Construct public input gadget
-        let public_input_gadget = PublicInputsGadget::<Affine, IPAPC> {
-            ins, lagrange_poly_comms
-        };
-        // END: public input to public_input_gadget
+            // Construct public input gadget
+            let public_input_gadget = PublicInputsGadget::<Affine, IPAPC> {
+                ins,
+                lagrange_poly_comms
+            };
+            // END: public input to public_input_gadget
 
-        // BEGIN: proof to proof_gadget
-        let proof_gadget: ProofGadget<Affine, IPAPC, IPAPCGadget> = ProofGadget::alloc(
-            cs.ns(|| "alloc proof"),
-            || Ok(proof)
-        ).unwrap();
-        // END: proof to proof_gadget
+            // BEGIN: proof to proof_gadget
+            let proof_gadget: ProofGadget<Affine, IPAPC, IPAPCGadget> = ProofGadget::alloc(
+                cs.ns(|| "alloc proof"),
+                || Ok(proof)
+            ).unwrap();
+            // END: proof to proof_gadget
 
-        MarlinVerifierGadget::<Affine, IPAPC, IPAPCGadget>::verify(
-            cs.ns(|| "verify proof"),
-            &ivk_gadget,
-            public_input_gadget,
-            &proof_gadget
-        ).unwrap().enforce_equal(
-            cs.ns(|| "final check"),
-            &Boolean::Constant(true)
-        ).unwrap();
+            MarlinVerifierGadget::<Affine, IPAPC, IPAPCGadget>::verify(
+                cs.ns(|| "verify proof"),
+                &ivk_gadget,
+                public_input_gadget,
+                &proof_gadget
+            ).unwrap().enforce_equal(
+                cs.ns(|| "final check"),
+                &Boolean::Constant(true)
+            ).unwrap();
 
-        println!(
-            "after Marlin, num_of_constraints = {}",
-            cs.num_constraints()
-        );
+            println!(
+                "after Marlin, num_of_constraints = {}",
+                cs.num_constraints()
+            );
 
-        assert!(
-            cs.is_satisfied(),
-            "Constraints not satisfied: {:?}",
-            cs.which_is_unsatisfied()
-        );
+            assert!(
+                cs.is_satisfied(),
+                "Constraints not satisfied: {:?}",
+                cs.which_is_unsatisfied()
+            );
+        }
     }
 }
