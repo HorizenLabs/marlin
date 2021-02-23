@@ -19,24 +19,22 @@ mod tests {
     };
     use r1cs_crypto::crh::poseidon::tweedle::TweedleFrPoseidonSpongeGadget;
     use r1cs_core::{ConstraintSynthesizer, ConstraintSystem, SynthesisError};
-    use crate::{
-        Marlin, MarlinRecursiveConfig,
-        constraints::{
-            data_structures::{
-                IndexVerifierKeyGadget, ProofGadget,
-                compute_lagrange_polynomials_commitments, PublicInputsGadget
-            },
-            verifier::MarlinVerifierGadget
-        }
-    };
+    use crate::{Marlin, constraints::{
+        data_structures::{
+            IndexVerifierKeyGadget, ProofGadget,
+            compute_lagrange_polynomials_commitments, PublicInputsGadget
+        },
+        verifier::MarlinVerifierGadget
+    }, MarlinRecursiveConfigNoZk};
     use rand::thread_rng;
     use std::ops::MulAssign;
     use blake2::Blake2s;
+    use rand::prelude::ThreadRng;
 
     type AffineGadget = GroupGadget<AffineParameters, Fr, FpGadget<Fr>>;
     type IPAPC = InnerProductArgPC<Fr, Affine, TweedleFrPoseidonSponge>;
     type IPAPCGadget = InnerProductArgPCGadget<Fq, Fr, Affine, AffineGadget, TweedleFrPoseidonSpongeGadget>;
-    type MarlinInst = Marlin<Affine, IPAPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>;
+    type MarlinInst = Marlin<Affine, IPAPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>;
 
     #[derive(Copy, Clone)]
     struct Circuit<F: Field> {
@@ -127,7 +125,7 @@ mod tests {
             let (index_pk, index_vk) = MarlinInst::index(&universal_srs, circ).unwrap();
             println!("Called index");
 
-            let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
+            let proof = MarlinInst::prove::<_, ThreadRng>(&index_pk, circ, &mut None).unwrap();
             println!("Called prover");
 
             assert!(MarlinInst::verify(&index_vk, &[c], &proof, rng).unwrap());

@@ -65,36 +65,45 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
 
 mod marlin {
     use super::*;
-    use crate::{
-        Marlin,
-        MarlinRecursiveConfig,
-        MarlinDefaultConfig,
-    };
+    use crate::{Marlin, MarlinRecursiveConfig, MarlinRecursiveConfigNoZk, MarlinDefaultConfig, MarlinDefaultConfigNoZk, MarlinConfig};
 
-    use algebra::UniformRand;
+    use algebra::{UniformRand, AffineCurve};
     use algebra::{
-        fields::tweedle::{
-            fq::Fq, fr::Fr,
-        }, curves::tweedle::dum::Affine
+        fields::tweedle::fr::Fr,
+        curves::tweedle::dum::Affine
     };
     use primitives::crh::poseidon::parameters::tweedle::TweedleFrPoseidonSponge;
     use poly_commit::ipa_pc::InnerProductArgPC;
     use blake2::Blake2s;
     use std::ops::MulAssign;
     use rand::thread_rng;
+    use poly_commit::PolynomialCommitment;
+    use poly_commit::fiat_shamir::FiatShamirRng;
+    use r1cs_core::ToConstraintField;
 
     type MultiPC = InnerProductArgPC<Fr, Affine, TweedleFrPoseidonSponge>;
-    type MarlinInstDefault = Marlin<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>;
-    type MarlinInstRecursive = Marlin<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>;
 
-    fn test_circuit(num_constraints: usize, num_variables: usize) {
+    fn test_circuit<
+        G: AffineCurve,
+        PC: PolynomialCommitment<G, RandomOracle = FS>,
+        FS: FiatShamirRng<G::ScalarField, <G::BaseField as Field>::BasePrimeField>,
+        MC: MarlinConfig,
+    >(
+        num_samples: usize,
+        num_constraints: usize,
+        num_variables: usize,
+    )
+    where
+        PC::VerifierKey: ToConstraintField<<G::BaseField as Field>::BasePrimeField>,
+        PC::Commitment: ToConstraintField<<G::BaseField as Field>::BasePrimeField>,
+    {
         let rng = &mut thread_rng();
 
-        let universal_srs = MarlinInstDefault::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
+        let universal_srs = Marlin::<G, PC, FS, MC>::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
 
-        for _ in 0..50 {
-            let a = Fq::rand(rng);
-            let b = Fq::rand(rng);
+        for _ in 0..num_samples {
+            let a = G::ScalarField::rand(rng);
+            let b = G::ScalarField::rand(rng);
             let mut c = a;
             c.mul_assign(&b);
             let mut d = c;
@@ -107,45 +116,16 @@ mod marlin {
                 num_variables,
             };
 
-            let (index_pk, index_vk) = MarlinInstDefault::index(&universal_srs, circ.clone()).unwrap();
+            let (index_pk, index_vk) = Marlin::<G, PC, FS, MC>::index(&universal_srs, circ.clone()).unwrap();
             println!("Called index");
 
-            let proof = MarlinInstDefault::prove(&index_pk, circ, rng).unwrap();
+            let proof = Marlin::<G, PC, FS, MC>::prove(&index_pk, circ,  &mut if MC::ZK { Some(thread_rng()) } else { None }).unwrap();
             println!("Called prover");
 
-            assert!(MarlinInstDefault::verify(&index_vk, &[c, d], &proof, rng).unwrap());
+            assert!(Marlin::<G, PC, FS, MC>::verify(&index_vk, &[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!MarlinInstDefault::verify(&index_vk, &[a, a], &proof, rng).unwrap());
-        }
-
-        let universal_srs = MarlinInstRecursive::universal_setup::<_, Blake2s>(100, 25, 100, rng).unwrap();
-
-        for _ in 0..50 {
-            let a = Fq::rand(rng);
-            let b = Fq::rand(rng);
-            let mut c = a;
-            c.mul_assign(&b);
-            let mut d = c;
-            d.mul_assign(&b);
-
-            let circ = Circuit {
-                a: Some(a),
-                b: Some(b),
-                num_constraints,
-                num_variables,
-            };
-
-            let (index_pk, index_vk) = MarlinInstRecursive::index(&universal_srs, circ.clone()).unwrap();
-            println!("Called index");
-
-            let proof = MarlinInstRecursive::prove(&index_pk, circ, rng).unwrap();
-            println!("Called prover");
-
-            assert!(MarlinInstRecursive::verify(&index_vk, &[c, d], &proof, rng).unwrap());
-            println!("Called verifier");
-            println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!MarlinInstRecursive::verify(&index_vk, &[a, a], &proof, rng).unwrap());
+            assert!(!Marlin::<G, PC, FS, MC>::verify(&index_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 
@@ -154,7 +134,10 @@ mod marlin {
         let num_constraints = 100;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
     }
 
     #[test]
@@ -162,7 +145,10 @@ mod marlin {
         let num_constraints = 26;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
     }
 
     #[test]
@@ -170,7 +156,10 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 100;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
     }
 
     #[test]
@@ -178,7 +167,10 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 26;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
     }
 
     #[test]
@@ -186,15 +178,26 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
     }
 
+    //TODO: Fix this test
     #[test]
     // See https://github.com/HorizenLabs/marlin/issues/3 for the rationale behind this test
     fn prove_and_verify_with_trivial_index_polynomials() {
         let num_constraints = 1 << 6;
         let num_variables = 1 << 4;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfig>(25, num_constraints, num_variables);
+        println!("Passed 1");
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfig>(25, num_constraints, num_variables);
+        println!("Passed 2");
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinDefaultConfigNoZk>(25, num_constraints, num_variables);
+        println!("Passed 3");
+        test_circuit::<Affine, MultiPC, TweedleFrPoseidonSponge, MarlinRecursiveConfigNoZk>(25, num_constraints, num_variables);
+        println!("Passed 4");
     }
 }

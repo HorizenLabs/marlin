@@ -58,6 +58,9 @@ pub trait MarlinConfig: Clone {
     /// that should verify the produced Marlin proof in a
     /// recursive fashion.
     const FOR_RECURSION: bool;
+
+    /// Enable or disable zero-knowledge
+    const ZK: bool = true;
 }
 
 #[derive(Clone)]
@@ -69,11 +72,29 @@ impl MarlinConfig for MarlinDefaultConfig {
 }
 
 #[derive(Clone)]
+/// For standard usage not requiring zk
+pub struct MarlinDefaultConfigNoZk;
+
+impl MarlinConfig for MarlinDefaultConfigNoZk {
+    const FOR_RECURSION: bool = false;
+    const ZK: bool = false;
+}
+
+#[derive(Clone)]
 /// For PCD applications
 pub struct MarlinRecursiveConfig;
 
 impl MarlinConfig for MarlinRecursiveConfig {
     const FOR_RECURSION: bool = true;
+}
+
+#[derive(Clone)]
+/// For PCD applications that do not require ZK
+pub struct MarlinRecursiveConfigNoZk;
+
+impl MarlinConfig for MarlinRecursiveConfigNoZk {
+    const FOR_RECURSION: bool = true;
+    const ZK: bool = false;
 }
 
 /// The compiled argument system.
@@ -121,7 +142,12 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         num_non_zero: usize,
         rng: &mut R,
     ) -> Result<UniversalSRS<G, PC>, Error<PC::Error>> {
-        let max_degree = AHPForR1CS::<G::ScalarField>::max_degree(num_constraints, num_variables, num_non_zero)?;
+        let max_degree = AHPForR1CS::<G::ScalarField>::max_degree(
+            num_constraints,
+            num_variables,
+            num_non_zero,
+            MC::ZK
+        )?;
         let setup_time = start_timer!(|| {
             format!(
             "Marlin::UniversalSetup with max_degree {}, computed for a maximum of {} constraints, {} vars, {} non_zero",
@@ -144,17 +170,17 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
 
         // TODO: Add check that c is in the correct mode.
         let index = AHPForR1CS::index(c)?;
-        if srs.max_degree() < index.max_degree() {
-            return Err(Error::IndexTooLarge(index.max_degree()));
+        if srs.max_degree() < index.max_degree(MC::ZK) {
+            return Err(Error::IndexTooLarge(index.max_degree(MC::ZK)));
         }
 
         let coeff_support = AHPForR1CS::get_degree_bounds(&index.index_info);
 
         // Marlin only needs degree 2 random polynomials
-        let supported_hiding_bound = 1;
+        let supported_hiding_bound = if MC::ZK { 1 } else { 0 };
         let (committer_key, verifier_key) =
             PC::trim(srs,
-                     index.max_degree(),
+                     index.max_degree(MC::ZK),
                      supported_hiding_bound,
                      Some(&coeff_support)
             ).map_err(Error::from_pc_err)?;
@@ -217,12 +243,19 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         Ok((index_pk, index_vk))
     }
 
+    // Cast a generic type to its dynamic type
+    fn get_rng<R: RngCore>(zk_rng: &mut Option<R>) -> Option<&mut dyn RngCore> {
+        let zk_rng_mut = zk_rng.as_mut();
+        if zk_rng_mut.is_some() { Some(zk_rng_mut.unwrap()) } else { None }
+    }
+
     /// Create a zkSNARK asserting that the constraint system is satisfied.
     pub fn prove<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
         index_pk: &IndexProverKey<G, PC>,
         c: C,
-        zk_rng: &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<G, PC>, Error<PC::Error>> {
+        assert!(zk_rng.is_some() && MC::ZK || zk_rng.is_none() && !MC::ZK);
         match MC::FOR_RECURSION {
             true => Self::prove_for_recursion(index_pk, c, zk_rng),
             false => Self::prove_standard(index_pk, c, zk_rng)
@@ -233,8 +266,9 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
     fn prove_for_recursion<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
         index_pk: &IndexProverKey<G, PC>,
         c: C,
-        zk_rng: &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<G, PC>, Error<PC::Error>> {
+
         let prover_time = start_timer!(|| "Marlin::Prover");
 
         let mut fs_rng = FS::new();
@@ -245,7 +279,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         ));
 
         // Add check that c is in the correct mode.
-        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c, MC::ZK)?;
 
         // --------------------------------------------------------------------
         // First round
@@ -270,7 +304,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             // in native field arithmetic, and this turns out to be around 4 times cheaper.
             // This optimization comes from MinaProtocol.
             prover_first_oracles.iter().chain(x_poly.iter()),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
             .map_err(Error::from_pc_err)?;
         end_timer!(first_round_comm_time);
@@ -295,7 +329,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (second_comms, second_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_second_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
             .map_err(Error::from_pc_err)?;
         end_timer!(second_round_comm_time);
@@ -319,7 +353,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (third_comms, third_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_third_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
             .map_err(Error::from_pc_err)?;
         end_timer!(third_round_comm_time);
@@ -418,7 +452,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             &labeled_comms,
             &query_set,
             &comm_rands,
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
             &mut fs_rng
         ).map_err(Error::from_pc_err)?;
 
@@ -438,12 +472,12 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
     fn prove_standard<C: ConstraintSynthesizer<G::ScalarField>, R: RngCore>(
         index_pk: &IndexProverKey<G, PC>,
         c: C,
-        zk_rng: &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<G, PC>, Error<PC::Error>> {
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
 
-        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c, MC::ZK)?;
         let public_input = prover_init_state.public_input();
 
         let mut fs_rng = FS::new();
@@ -462,7 +496,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (first_comms, first_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_first_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(first_round_comm_time);
@@ -483,7 +517,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (second_comms, second_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_second_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(second_round_comm_time);
@@ -503,7 +537,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
         let (third_comms, third_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_third_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(third_round_comm_time);
@@ -589,7 +623,7 @@ impl<G: AffineCurve, PC, FS, MC> Marlin<G, PC, FS, MC>
             &labeled_comms,
             &query_set,
             &comm_rands,
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
             &mut fs_rng
         ).map_err(Error::from_pc_err)?;
 

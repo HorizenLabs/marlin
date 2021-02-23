@@ -41,8 +41,8 @@ impl<F: PrimeField> algebra::ToBytes for IndexInfo<F> {
 impl<F: PrimeField> IndexInfo<F> {
     /// The maximum degree of polynomial required to represent this index in the
     /// the AHP.
-    pub fn max_degree(&self) -> usize {
-        AHPForR1CS::<F>::max_degree(self.num_constraints, self.num_variables, self.num_non_zero)
+    pub fn max_degree(&self, zk: bool) -> usize {
+        AHPForR1CS::<F>::max_degree(self.num_constraints, self.num_variables, self.num_non_zero, zk)
             .unwrap()
     }
 }
@@ -80,8 +80,8 @@ pub struct Index<F: PrimeField> {
 
 impl<F: PrimeField> Index<F> {
     /// The maximum degree required to represent polynomials of this index.
-    pub fn max_degree(&self) -> usize {
-        self.index_info.max_degree()
+    pub fn max_degree(&self, zk: bool) -> usize {
+        self.index_info.max_degree(zk)
     }
 
     /// Iterate over the indexed polynomials.
