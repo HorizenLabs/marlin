@@ -23,7 +23,7 @@ use algebra::ToBytes;
 use algebra::UniformRand;
 use std::marker::PhantomData;
 use digest::Digest;
-use poly_commit::Evaluations;
+use poly_commit::{Evaluations, LabeledPolynomial, BatchLCProof};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
@@ -50,18 +50,51 @@ pub mod ahp;
 pub use ahp::AHPForR1CS;
 use ahp::EvaluationsProvider;
 use algebra_utils::get_best_evaluation_domain;
+use crate::ahp::verifier::VerifierState;
+use crate::ahp::prover::ProverMsg;
 
 #[cfg(test)]
 mod test;
 
+/// Configuration parameters for the Marlin proving system, modifying the
+/// internal behaviour of both prover and verifier.
+pub trait MarlinConfig: Clone {
+    /// If set, an optimization exploiting LC of polynomials will be enabled.
+    /// This optimization allows to include less opening values in the proof,
+    /// thus reducing its size, but comes with additional variable base scalar
+    /// multiplications to be performed by the verifier in order to verify the
+    /// sumcheck equations, that are expensive to circuitize.
+    /// If unset, all the opening values of all the polynomials are included in
+    /// the proof (thus increasing its size), but doesn't come with any additional
+    /// operation to be performed by the verifier, apart from the lincheck of course.
+    const LC_OPT: bool;
+}
+
+#[derive(Clone)]
+/// For standard, circuit friendly, usage
+pub struct MarlinDefaultConfig;
+
+impl MarlinConfig for MarlinDefaultConfig {
+    const LC_OPT: bool = false;
+}
+
+#[derive(Clone)]
+/// For standard usage with Poly LCs (not circuit friendly)
+pub struct MarlinDefaultConfigLC;
+
+impl MarlinConfig for MarlinDefaultConfigLC {
+    const LC_OPT: bool = true;
+}
+
 /// The compiled argument system.
-pub struct Marlin<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest>(
+pub struct Marlin<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig>(
     #[doc(hidden)] PhantomData<F>,
     #[doc(hidden)] PhantomData<PC>,
     #[doc(hidden)] PhantomData<D>,
+    #[doc(hidden)] PhantomData<MC>,
 );
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
+impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Marlin<F, PC, D, MC> {
     /// The personalization string for this protocol. Used to personalize the
     /// Fiat-Shamir rng.
     pub const PROTOCOL_NAME: &'static [u8] = b"MARLIN-2019";
@@ -251,9 +284,102 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
             .chain(third_comm_rands)
             .collect();
 
+        // Gather prover messages together.
+        let prover_messages = vec![prover_first_msg, prover_second_msg, prover_third_msg];
+
+        let proof = if MC::LC_OPT {
+            Self::prove_lcs(
+                index_pk,
+                public_input,
+                verifier_state,
+                polynomials,
+                commitments,
+                labeled_comms,
+                comm_rands,
+                prover_messages,
+                fs_rng,
+                zk_rng
+            )
+        } else {
+            Self::prove_no_lcs(
+                index_pk,
+                verifier_state,
+                polynomials,
+                commitments,
+                labeled_comms,
+                comm_rands,
+                prover_messages,
+                fs_rng,
+                zk_rng
+            )
+        }?;
+        end_timer!(prover_time);
+
+        //proof.print_size_info();
+        Ok(proof)
+    }
+
+    fn prove_no_lcs<R: RngCore>(
+        index_pk:        &IndexProverKey<F, PC>,
+        verifier_state:  VerifierState<F>,
+        polynomials:     Vec<&LabeledPolynomial<F>>,
+        commitments:     Vec<Vec<PC::Commitment>>,
+        labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
+        comm_rands:      Vec<PC::Randomness>,
+        prover_messages: Vec<ProverMsg<F>>,
+        mut fs_rng:      FiatShamirRng<D>,
+        zk_rng:          &mut R,
+    ) -> Result<Proof<F, PC>, Error<PC::Error>> {
+
+        // Compute the AHP verifier's query set.
+        let (query_set, _) =
+            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+
+        let eval_time = start_timer!(|| "Evaluating polynomials over query set");
+
+        let mut evaluations = AHPForR1CS::<F>::evaluate_query_set_to_vec(
+            polynomials.clone(), &query_set
+        );
+
+        evaluations.sort_by(|a, b| a.0.cmp(&b.0));
+        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<F>>();
+        end_timer!(eval_time);
+
+        fs_rng.absorb(&evaluations);
+        let opening_challenge: F = u128::rand(&mut fs_rng).into();
+        let opening_challenges = |pow| opening_challenge.pow(&[pow]);
+
+        let opening_time = start_timer!(|| "Compute opening proof");
+        let proof = PC::batch_open_individual_opening_challenges(
+            &index_pk.committer_key,
+            polynomials.clone(),
+            &labeled_comms,
+            &query_set,
+            &opening_challenges,
+            &comm_rands,
+            Some(zk_rng),
+        ).map_err(Error::from_pc_err)?;
+        end_timer!(opening_time);
+
+        Ok(Proof::new(commitments, evaluations, prover_messages, BatchLCProof::<F, PC>{ proof, evals: None }))
+    }
+
+    fn prove_lcs<R: RngCore>(
+        index_pk:        &IndexProverKey<F, PC>,
+        public_input:    Vec<F>,
+        verifier_state:  VerifierState<F>,
+        polynomials:     Vec<&LabeledPolynomial<F>>,
+        commitments:     Vec<Vec<PC::Commitment>>,
+        labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
+        comm_rands:      Vec<PC::Randomness>,
+        prover_messages: Vec<ProverMsg<F>>,
+        mut fs_rng:      FiatShamirRng<D>,
+        zk_rng:          &mut R,
+    ) -> Result<Proof<F, PC>, Error<PC::Error>>
+    {
         // Compute the AHP verifier's query set.
         let (query_set, verifier_state) =
-            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
         let lc_s = AHPForR1CS::construct_linear_combinations(
             &public_input,
             &polynomials,
@@ -262,14 +388,14 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
 
         let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
         let mut evaluations = Vec::new();
-        for (label, (_, point)) in &query_set {
+        for (label, (point_label, point)) in &query_set {
             let lc = lc_s
                 .iter()
                 .find(|lc| &lc.label == label)
                 .ok_or(ahp::Error::MissingEval(label.to_string()))?;
             let eval = polynomials.get_lc_eval(&lc, *point)?;
             if !AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                evaluations.push((label.to_string(), eval));
+                evaluations.push(((label.to_string(), point_label.to_string()), eval));
             }
         }
         evaluations.sort_by(|a, b| a.0.cmp(&b.0));
@@ -279,6 +405,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
         fs_rng.absorb(&evaluations);
         let opening_challenge: F = u128::rand(&mut fs_rng).into();
 
+        let opening_time = start_timer!(|| "Compute opening proof");
         let pc_proof = PC::open_combinations(
             &index_pk.committer_key,
             &lc_s,
@@ -288,16 +415,10 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
             opening_challenge,
             &comm_rands,
             Some(zk_rng),
-        )
-        .map_err(Error::from_pc_err)?;
+        ).map_err(Error::from_pc_err)?;
+        end_timer!(opening_time);
 
-        // Gather prover messages together.
-        let prover_messages = vec![prover_first_msg, prover_second_msg, prover_third_msg];
-
-        let proof = Proof::new(commitments, evaluations, prover_messages, pc_proof);
-        proof.print_size_info();
-        end_timer!(prover_time);
-        Ok(proof)
+        Ok(Proof::new(commitments, evaluations, prover_messages, pc_proof))
     }
 
     /// Verify that a proof for the constrain system defined by `C` asserts that
@@ -375,8 +496,83 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
             .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
             .collect();
 
+        let result = if MC::LC_OPT {
+            Self::verify_lcs(index_vk, proof, public_input, verifier_state, commitments, fs_rng, rng)
+        } else {
+            Self::verify_no_lcs(index_vk, proof, public_input, verifier_state, commitments, fs_rng, rng)
+        }?;
+
+        end_timer!(verifier_time);
+
+        Ok(result)
+    }
+
+    fn verify_no_lcs<R: RngCore>(
+        index_vk:       &IndexVerifierKey<F, PC>,
+        proof:          &Proof<F, PC>,
+        public_input:   Vec<F>,
+        verifier_state: VerifierState<F>,
+        labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
+        mut fs_rng:     FiatShamirRng<D>,
+        rng:            &mut R,
+    ) -> Result<bool, Error<PC::Error>>
+    {
         let (query_set, verifier_state) =
             AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+
+        let mut evaluations = Evaluations::new();
+        let mut evaluation_labels = Vec::new();
+        for (poly_label, (_, point)) in query_set.iter().cloned() {
+            evaluation_labels.push((poly_label, point));
+        }
+
+        evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
+        for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
+            evaluations.insert(q, *eval);
+        }
+
+        fs_rng.absorb(&proof.evaluations);
+        let opening_challenge: F = u128::rand(&mut fs_rng).into();
+        let opening_challenges = |pow| opening_challenge.pow(&[pow]);
+
+        let evaluations_are_correct = AHPForR1CS::verify_sumchecks(
+            &public_input,
+            &evaluations,
+            &verifier_state,
+        );
+
+        if evaluations_are_correct.is_err()
+        {
+            eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
+            return Ok(false)
+        }
+
+        let check_time = start_timer!("Check opening proof");
+        let evaluations_are_correct = PC::batch_check_individual_opening_challenges(
+            &index_vk.verifier_key,
+            &labeled_comms,
+            &query_set,
+            &evaluations,
+            &proof.pc_proof.proof,
+            &opening_challenges,
+            rng,
+        ).map_err(Error::from_pc_err)?;
+        end_timer!(check_time);
+
+        Ok(evaluations_are_correct)
+    }
+
+    fn verify_lcs<R: RngCore>(
+        index_vk:       &IndexVerifierKey<F, PC>,
+        proof:          &Proof<F, PC>,
+        public_input:   Vec<F>,
+        verifier_state: VerifierState<F>,
+        labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
+        mut fs_rng:     FiatShamirRng<D>,
+        rng:         &mut R,
+    ) -> Result<bool, Error<PC::Error>> {
+        let (query_set, verifier_state) =
+            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
 
         fs_rng.absorb(&proof.evaluations);
         let opening_challenge: F = u128::rand(&mut fs_rng).into();
@@ -402,25 +598,24 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
             &verifier_state,
         )?;
 
+        let check_time = start_timer!("Check opening proof");
         let evaluations_are_correct = PC::check_combinations(
             &index_vk.verifier_key,
             &lc_s,
-            &commitments,
+            &labeled_comms,
             &query_set,
             &evaluations,
             &proof.pc_proof,
             opening_challenge,
             rng,
-        )
-        .map_err(Error::from_pc_err)?;
+        ).map_err(Error::from_pc_err);
+        end_timer!(check_time);
 
-        if !evaluations_are_correct {
-            eprintln!("PC::Check failed");
+        if evaluations_are_correct.is_err() {
+            eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
+            return Ok(false)
         }
-        end_timer!(verifier_time, || format!(
-            " PC::Check for AHP Verifier linear equations: {}",
-            evaluations_are_correct
-        ));
-        Ok(evaluations_are_correct)
+
+        evaluations_are_correct
     }
 }

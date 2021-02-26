@@ -6,7 +6,7 @@ use rand_core::RngCore;
 
 use algebra::PrimeField;
 use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, sample_element_outside_domain};
-use poly_commit::QuerySet;
+use poly_commit::{QuerySet, LabeledPolynomial};
 
 /// State of the AHP verifier
 pub struct VerifierState<F: PrimeField> {
@@ -100,7 +100,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
     }
 
     /// Output the query state and next round state.
-    pub fn verifier_query_set<'a, 'b, R: RngCore>(
+    pub fn verifier_lcs_query_set<'a, 'b, R: RngCore>(
         state: VerifierState<F>,
         _: &'a mut R,
     ) -> (QuerySet<'b, F>, VerifierState<F>) {
@@ -137,5 +137,76 @@ impl<F: PrimeField> AHPForR1CS<F> {
         query_set.insert(("inner_sumcheck".into(), ("gamma".into(), gamma)));
 
         (query_set, state)
+    }
+
+    /// Output the query state and next round state.
+    pub fn verifier_query_set<'a, 'b, R: RngCore>(
+        state: VerifierState<F>,
+        _: &'a mut R,
+    ) -> (QuerySet<'b, F>, VerifierState<F>) {
+
+        let beta = state.second_round_msg.unwrap().beta;
+        let gamma = state.gamma.unwrap();
+
+        let g_h = state.domain_h.group_gen();
+        let g_k = state.domain_k.group_gen();
+
+        let mut query_set = QuerySet::new();
+
+        // Inner sumcheck
+
+        // First round polys
+        query_set.insert(("w".into(), ("beta".into(), beta)));
+        query_set.insert(("z_a".into(), ("beta".into(), beta)));
+        query_set.insert(("z_b".into(), ("beta".into(), beta)));
+
+        // Second round polys
+        query_set.insert(("t".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("beta".into(), beta)));
+        query_set.insert(("z_1".into(), ("g * beta".into(), g_h * beta)));
+        query_set.insert(("h_1".into(), ("beta".into(), beta)));
+
+        // Outer sumcheck
+
+        // Third round polys
+        query_set.insert(("z_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("z_2".into(), ("g * gamma".into(), g_k * gamma)));
+        query_set.insert(("h_2".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("a_val".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("b_val".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_row".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_row_col".into(), ("gamma".into(), gamma)));
+        query_set.insert(("c_val".into(), ("gamma".into(), gamma)));
+
+        (query_set, state)
+    }
+
+    /// Evaluate the given polynomials at `query_set` and returns a Vec<((poly_label, point_label), eval)>)
+    pub fn evaluate_query_set_to_vec<'a>(
+        polys: impl IntoIterator<Item = &'a LabeledPolynomial<F>>,
+        query_set: &QuerySet<'a, F>,
+    ) -> Vec<((String, String), F)>
+    {
+        use std::{
+            collections::BTreeMap,
+            iter::FromIterator,
+        };
+        let polys = BTreeMap::from_iter(polys.into_iter().map(|p| (p.label(), p)));
+        let mut v = Vec::new();
+        for (label, (point_label, point)) in query_set {
+            let poly = polys
+                .get(label)
+                .expect("polynomial in evaluated lc is not found");
+            let eval = poly.evaluate(*point);
+            v.push(((label.clone(), point_label.clone()), eval));
+        }
+        v
     }
 }

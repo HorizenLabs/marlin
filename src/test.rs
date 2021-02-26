@@ -65,26 +65,43 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
 
 mod marlin {
     use super::*;
-    use crate::Marlin;
+    use crate::{
+        Marlin, MarlinConfig,
+        MarlinDefaultConfig,
+        MarlinDefaultConfigLC
+    };
 
-    use algebra::UniformRand;
-    use algebra::{fields::tweedle::fr::Fr, curves::tweedle::dee::Affine};
-    use blake2::Blake2s;
-    use std::ops::MulAssign;
+    use algebra::{
+        fields::tweedle::fq::Fq,
+        curves::tweedle::dum::Affine,
+        PrimeField,
+    };
     use poly_commit::ipa_pc::InnerProductArgPC;
+    use blake2::Blake2s;
     use rand::thread_rng;
+    use poly_commit::PolynomialCommitment;
+    use digest::Digest;
 
     type MultiPC = InnerProductArgPC<Affine, Blake2s>;
-    type MarlinInst = Marlin<Fr, MultiPC, Blake2s>;
 
-    fn test_circuit(num_constraints: usize, num_variables: usize) {
+    fn test_circuit<
+        F:  PrimeField,
+        PC: PolynomialCommitment<F>,
+        D:  Digest,
+        MC: MarlinConfig,
+    >(
+        num_samples: usize,
+        num_constraints: usize,
+        num_variables: usize,
+    )
+    {
         let rng = &mut thread_rng();
 
-        let universal_srs = MarlinInst::universal_setup(100, 25, 100, rng).unwrap();
+        let universal_srs = Marlin::<F, PC, D, MC>::universal_setup(100, 25, 100, rng).unwrap();
 
-        for _ in 0..100 {
-            let a = Fr::rand(rng);
-            let b = Fr::rand(rng);
+        for _ in 0..num_samples {
+            let a = F::rand(rng);
+            let b = F::rand(rng);
             let mut c = a;
             c.mul_assign(&b);
             let mut d = c;
@@ -97,16 +114,16 @@ mod marlin {
                 num_variables,
             };
 
-            let (index_pk, index_vk) = MarlinInst::index(&universal_srs, circ.clone()).unwrap();
+            let (index_pk, index_vk) = Marlin::<F, PC, D, MC>::index(&universal_srs, circ.clone()).unwrap();
             println!("Called index");
 
-            let proof = MarlinInst::prove(&index_pk, circ, rng).unwrap();
+            let proof = Marlin::<F, PC, D, MC>::prove(&index_pk, circ,  rng).unwrap();
             println!("Called prover");
 
-            assert!(MarlinInst::verify(&index_vk, &[c, d], &proof, rng).unwrap());
+            assert!(Marlin::<F, PC, D, MC>::verify(&index_vk, &[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!MarlinInst::verify(&index_vk, &[a, a], &proof, rng).unwrap());
+            assert!(!Marlin::<F, PC, D, MC>::verify(&index_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 
@@ -115,7 +132,8 @@ mod marlin {
         let num_constraints = 100;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 
     #[test]
@@ -123,7 +141,8 @@ mod marlin {
         let num_constraints = 26;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 
     #[test]
@@ -131,7 +150,8 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 100;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 
     #[test]
@@ -139,7 +159,8 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 26;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 
     #[test]
@@ -147,7 +168,8 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 25;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 
     #[test]
@@ -156,6 +178,7 @@ mod marlin {
         let num_constraints = 1 << 6;
         let num_variables = 1 << 4;
 
-        test_circuit(num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfig>(50, num_constraints, num_variables);
+        test_circuit::<Fq, MultiPC, Blake2s, MarlinDefaultConfigLC>(50, num_constraints, num_variables);
     }
 }
