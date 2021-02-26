@@ -77,6 +77,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         num_constraints: usize,
         num_variables: usize,
         num_non_zero: usize,
+        zk: bool,
     ) -> Result<usize, Error> {
         let padded_matrix_dim =
             constraint_systems::padded_matrix_dim(num_variables, num_constraints);
@@ -84,7 +85,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
         let domain_k_size = get_best_evaluation_domain::<F>(num_non_zero)
             .ok_or(SynthesisError::PolynomialDegreeTooLarge)?.size();
-        let zk_bound = 2; // Due to our way of "batching" polynomials we need an extra query.
+        let zk_bound = if zk { 2 } else { 0 }; // Due to our way of "batching" polynomials we need an extra query.
         Ok(*[
             2 * domain_h_size + 2 * zk_bound - 3, // h_1 max degree
             domain_h_size - 1, // For exceptional case of high zk_bound

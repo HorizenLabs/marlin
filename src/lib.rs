@@ -68,22 +68,8 @@ pub trait MarlinConfig: Clone {
     /// the proof (thus increasing its size), but doesn't come with any additional
     /// operation to be performed by the verifier, apart from the lincheck of course.
     const LC_OPT: bool;
-}
-
-#[derive(Clone)]
-/// For standard, circuit friendly, usage
-pub struct MarlinDefaultConfig;
-
-impl MarlinConfig for MarlinDefaultConfig {
-    const LC_OPT: bool = false;
-}
-
-#[derive(Clone)]
-/// For standard usage with Poly LCs (not circuit friendly)
-pub struct MarlinDefaultConfigLC;
-
-impl MarlinConfig for MarlinDefaultConfigLC {
-    const LC_OPT: bool = true;
+    /// Enable or disable zero-knowledge
+    const ZK: bool = true;
 }
 
 /// The compiled argument system.
@@ -107,7 +93,12 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         num_non_zero: usize,
         rng: &mut R,
     ) -> Result<UniversalSRS<F, PC>, Error<PC::Error>> {
-        let max_degree = AHPForR1CS::<F>::max_degree(num_constraints, num_variables, num_non_zero)?;
+        let max_degree = AHPForR1CS::<F>::max_degree(
+            num_constraints,
+            num_variables,
+            num_non_zero,
+            MC::ZK
+        )?;
         let setup_time = start_timer!(|| {
             format!(
             "Marlin::UniversalSetup with max_degree {}, computed for a maximum of {} constraints, {} vars, {} non_zero",
@@ -130,16 +121,17 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         // TODO: Add check that c is in the correct mode.
         let index = AHPForR1CS::index(c)?;
-        if srs.max_degree() < index.max_degree() {
+        if srs.max_degree() < index.max_degree(MC::ZK) {
             Err(Error::IndexTooLarge)?;
         }
 
         let coeff_support = AHPForR1CS::get_degree_bounds(&index.index_info);
         // Marlin only needs degree 2 random polynomials
-        let supported_hiding_bound = 1;
+        let supported_hiding_bound = if MC::ZK { 1 } else { 0 };
+
         let (committer_key, verifier_key) =
             PC::trim(srs,
-                     index.max_degree(),
+                     index.max_degree(MC::ZK),
                      supported_hiding_bound,
                      Some(&coeff_support)
             ).map_err(Error::from_pc_err)?;
@@ -171,16 +163,23 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         Ok((index_pk, index_vk))
     }
 
+    // Cast a generic type to its dynamic type
+    fn get_rng<R: RngCore>(zk_rng: &mut Option<R>) -> Option<&mut dyn RngCore> {
+        let zk_rng_mut = zk_rng.as_mut();
+        if zk_rng_mut.is_some() { Some(zk_rng_mut.unwrap()) } else { None }
+    }
+
     /// Create a zkSNARK asserting that the constraint system is satisfied.
     pub fn prove<C: ConstraintSynthesizer<F>, R: RngCore>(
         index_pk: &IndexProverKey<F, PC>,
         c: C,
-        zk_rng: &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>> {
+        assert!(zk_rng.is_some() && MC::ZK || zk_rng.is_none() && !MC::ZK);
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
 
-        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c)?;
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c, MC::ZK)?;
         let public_input = prover_init_state.public_input();
         let mut fs_rng = FiatShamirRng::<D>::from_seed(
             &to_bytes![&Self::PROTOCOL_NAME, &index_pk.index_vk, &public_input].unwrap(),
@@ -196,7 +195,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let (first_comms, first_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_first_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(first_round_comm_time);
@@ -217,7 +216,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let (second_comms, second_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_second_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(second_round_comm_time);
@@ -237,7 +236,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let (third_comms, third_comm_rands) = PC::commit(
             &index_pk.committer_key,
             prover_third_oracles.iter(),
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         )
         .map_err(Error::from_pc_err)?;
         end_timer!(third_round_comm_time);
@@ -328,7 +327,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         comm_rands:      Vec<PC::Randomness>,
         prover_messages: Vec<ProverMsg<F>>,
         mut fs_rng:      FiatShamirRng<D>,
-        zk_rng:          &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>> {
 
         // Compute the AHP verifier's query set.
@@ -357,7 +356,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             &query_set,
             &opening_challenges,
             &comm_rands,
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         ).map_err(Error::from_pc_err)?;
         end_timer!(opening_time);
 
@@ -374,7 +373,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         comm_rands:      Vec<PC::Randomness>,
         prover_messages: Vec<ProverMsg<F>>,
         mut fs_rng:      FiatShamirRng<D>,
-        zk_rng:          &mut R,
+        zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>>
     {
         // Compute the AHP verifier's query set.
@@ -414,7 +413,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             &query_set,
             opening_challenge,
             &comm_rands,
-            Some(zk_rng),
+            Self::get_rng(zk_rng),
         ).map_err(Error::from_pc_err)?;
         end_timer!(opening_time);
 
