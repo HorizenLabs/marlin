@@ -521,13 +521,13 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
-        for (poly_label, (_, point)) in query_set.iter().cloned() {
-            evaluation_labels.push((poly_label, point));
+        for (poly_label, (point_label, point)) in query_set.iter().cloned() {
+            evaluation_labels.push(((poly_label, point_label), point));
         }
 
         evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
         for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
-            evaluations.insert(q, *eval);
+            evaluations.insert(((q.0).0, q.1), *eval);
         }
 
         fs_rng.absorb(&proof.evaluations);
@@ -578,17 +578,17 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
-        for (poly_label, (_, point)) in query_set.iter().cloned() {
+        for (poly_label, (point_label, point)) in query_set.iter().cloned() {
             if AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
                 evaluations.insert((poly_label, point), F::zero());
             } else {
-                evaluation_labels.push((poly_label, point));
+                evaluation_labels.push(((poly_label, point_label), point));
             }
         }
 
         evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
         for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
-            evaluations.insert(q, *eval);
+            evaluations.insert(((q.0).0, q.1), *eval);
         }
 
         let lc_s = AHPForR1CS::construct_linear_combinations(
