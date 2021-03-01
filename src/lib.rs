@@ -430,6 +430,77 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     ) -> Result<bool, Error<PC::Error>> {
         let verifier_time = start_timer!(|| "Marlin Verifier");
 
+        if !MC::LC_OPT {
+            // Check AHP (e.g. sumcheck equations)
+            let ahp_result = Self::verify_ahp(
+                index_vk,
+                &public_input,
+                proof,
+            );
+
+            if ahp_result.is_err() {
+                end_timer!(verifier_time);
+                println!("AHP Verification failed: {:?}", ahp_result.err());
+                return Ok(false)
+            }
+
+            let (query_set, evaluations, commitments, mut fs_rng) = ahp_result.unwrap();
+
+            // Check opening proof
+            let opening_result = Self::verify_opening(
+                index_vk,
+                proof,
+                commitments,
+                query_set,
+                evaluations,
+                &mut fs_rng,
+                rng
+            );
+
+            if opening_result.is_err() {
+                end_timer!(verifier_time);
+                println!("Opening proof Verification failed: {:?}", opening_result.err());
+                return Ok(false)
+            }
+
+            end_timer!(verifier_time);
+            opening_result
+        } else {
+            let result = Self::verify_lcs(
+                index_vk,
+                proof,
+                public_input,
+                rng
+            );
+
+            if result.is_err() {
+                end_timer!(verifier_time);
+                println!("AHP Verification failed: {:?}", result.err());
+                return Ok(false)
+            }
+
+            end_timer!(verifier_time);
+            result
+        }
+    }
+
+    /// Verify that a proof for the constrain system defined by `C` asserts that
+    /// all constraints are satisfied. Checks only that the sumcheck equations
+    /// are satisfied.
+    pub fn verify_ahp<'a>(
+        index_vk:       &IndexVerifierKey<F, PC>,
+        public_input:   &[F],
+        proof:          &Proof<F, PC>,
+    )  -> Result<(
+            QuerySet<'a, F>,
+            Evaluations<'a, F>,
+            Vec<LabeledCommitment<PC::Commitment>>,
+            FiatShamirRng<D>
+        ), Error<PC::Error>> {
+        assert!(!MC::LC_OPT);
+
+        let ahp_verification_time = start_timer!(|| "Verify Sumcheck equations");
+
         let public_input = {
             let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
 
@@ -495,80 +566,9 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
             .collect();
 
-        if !MC::LC_OPT {
-            // Check AHP (e.g. sumcheck equations)
-            let ahp_result = Self::verify_ahp(
-                verifier_state,
-                &public_input,
-                proof,
-                &mut fs_rng,
-            );
-
-            if ahp_result.is_err() {
-                end_timer!(verifier_time);
-                println!("AHP Verification failed: {:?}", ahp_result.err());
-                return Ok(false)
-            }
-
-            let (query_set, evaluations) = ahp_result.unwrap();
-
-            // Check opening proof
-            let opening_result = Self::verify_opening(
-                index_vk,
-                proof,
-                commitments,
-                query_set,
-                evaluations,
-                &mut fs_rng,
-                rng
-            );
-
-            if opening_result.is_err() {
-                end_timer!(verifier_time);
-                println!("Opening proof Verification failed: {:?}", opening_result.err());
-                return Ok(false)
-            }
-
-            end_timer!(verifier_time);
-            opening_result
-        } else {
-            let result = Self::verify_lcs(
-                index_vk,
-                proof,
-                public_input,
-                verifier_state,
-                commitments,
-                fs_rng,
-                rng
-            );
-
-            if result.is_err() {
-                end_timer!(verifier_time);
-                println!("AHP Verification failed: {:?}", result.err());
-                return Ok(false)
-            }
-
-            end_timer!(verifier_time);
-            result
-        }
-    }
-
-    /// Verify that a proof for the constrain system defined by `C` asserts that
-    /// all constraints are satisfied. Checks only that the sumcheck equations
-    /// are satisfied.
-    pub fn verify_ahp<'a>(
-        verifier_state: VerifierState<F>,
-        public_input: &[F],
-        proof: &Proof<F, PC>,
-        fs_rng: &mut FiatShamirRng<D>,
-    )  -> Result<(QuerySet<'a, F>, Evaluations<'a, F>), Error<PC::Error>> {
-        assert!(!MC::LC_OPT);
-
-        let ahp_verification_time = start_timer!(|| "Verify Sumcheck equations");
-
         // Check sumchecks equations
         let (query_set, verifier_state) =
-            AHPForR1CS::verifier_query_set(verifier_state, fs_rng);
+            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
@@ -589,7 +589,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         end_timer!(ahp_verification_time);
 
-        Ok((query_set, evaluations))
+        Ok((query_set, evaluations, commitments, fs_rng))
     }
 
     /// Verify that a proof for the constrain system defined by `C` asserts that
@@ -630,13 +630,75 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     fn verify_lcs<R: RngCore>(
         index_vk:       &IndexVerifierKey<F, PC>,
         proof:          &Proof<F, PC>,
-        public_input:   Vec<F>,
-        verifier_state: VerifierState<F>,
-        labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
-        mut fs_rng:     FiatShamirRng<D>,
+        public_input:   &[F],
         rng:         &mut R,
     ) -> Result<bool, Error<PC::Error>> {
         let check_time = start_timer!(|| "Check sumchecks and opening proofs");
+
+        let public_input = {
+            let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
+
+            let mut unpadded_input = public_input.to_vec();
+            unpadded_input.resize(
+                std::cmp::max(public_input.len(), domain_x.size() - 1),
+                F::zero(),
+            );
+
+            unpadded_input
+        };
+
+        let mut fs_rng = FiatShamirRng::<D>::from_seed(
+            &to_bytes![&Self::PROTOCOL_NAME, &index_vk, &public_input].unwrap(),
+        );
+
+        // --------------------------------------------------------------------
+        // First round
+
+        let first_comms = &proof.commitments[0];
+        fs_rng.absorb(&to_bytes![first_comms, proof.prover_messages[0]].unwrap());
+
+        let (_, verifier_state) =
+            AHPForR1CS::verifier_first_round(index_vk.index_info, &mut fs_rng)?;
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Second round
+        let second_comms = &proof.commitments[1];
+        fs_rng.absorb(&to_bytes![second_comms, proof.prover_messages[1]].unwrap());
+
+        let (_, verifier_state) = AHPForR1CS::verifier_second_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // --------------------------------------------------------------------
+        // Third round
+        let third_comms = &proof.commitments[2];
+        fs_rng.absorb(&to_bytes![third_comms, proof.prover_messages[2]].unwrap());
+
+        let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
+        // --------------------------------------------------------------------
+
+        // Collect degree bounds for commitments. Indexed polynomials have *no*
+        // degree bounds because we know the committed index polynomial has the
+        // correct degree.
+        let index_info = index_vk.index_info;
+        let degree_bounds = vec![None; index_vk.index_comms.len()]
+            .into_iter()
+            .chain(AHPForR1CS::prover_first_round_degree_bounds(&index_info))
+            .chain(AHPForR1CS::prover_second_round_degree_bounds(&index_info))
+            .chain(AHPForR1CS::prover_third_round_degree_bounds(&index_info))
+            .collect::<Vec<_>>();
+
+        // Gather commitments in one vector.
+        let commitments: Vec<_> = index_vk
+            .iter()
+            .chain(first_comms)
+            .chain(second_comms)
+            .chain(third_comms)
+            .cloned()
+            .zip(AHPForR1CS::<F>::polynomial_labels())
+            .zip(degree_bounds)
+            .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
+            .collect();
 
         let (query_set, verifier_state) =
             AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
@@ -668,7 +730,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let evaluations_are_correct = PC::check_combinations(
             &index_vk.verifier_key,
             &lc_s,
-            &labeled_comms,
+            &commitments,
             &query_set,
             &evaluations,
             &proof.pc_proof,
