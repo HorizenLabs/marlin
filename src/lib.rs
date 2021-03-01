@@ -23,7 +23,7 @@ use algebra::ToBytes;
 use algebra::UniformRand;
 use std::marker::PhantomData;
 use digest::Digest;
-use poly_commit::{Evaluations, LabeledPolynomial, BatchLCProof};
+use poly_commit::{Evaluations, LabeledPolynomial, BatchLCProof, QuerySet};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
@@ -428,7 +428,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         proof: &Proof<F, PC>,
         rng: &mut R,
     ) -> Result<bool, Error<PC::Error>> {
-        let verifier_time = start_timer!(|| "Marlin::Verify");
+        let verifier_time = start_timer!(|| "Marlin Verifier");
 
         let public_input = {
             let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
@@ -495,29 +495,80 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
             .collect();
 
-        let result = if MC::LC_OPT {
-            Self::verify_lcs(index_vk, proof, public_input, verifier_state, commitments, fs_rng, rng)
+        if !MC::LC_OPT {
+            // Check AHP (e.g. sumcheck equations)
+            let ahp_result = Self::verify_ahp(
+                verifier_state,
+                &public_input,
+                proof,
+                &mut fs_rng,
+            );
+
+            if ahp_result.is_err() {
+                end_timer!(verifier_time);
+                println!("AHP Verification failed: {:?}", ahp_result.err());
+                return Ok(false)
+            }
+
+            let (query_set, evaluations) = ahp_result.unwrap();
+
+            // Check opening proof
+            let opening_result = Self::verify_opening(
+                index_vk,
+                proof,
+                commitments,
+                query_set,
+                evaluations,
+                &mut fs_rng,
+                rng
+            );
+
+            if opening_result.is_err() {
+                end_timer!(verifier_time);
+                println!("Opening proof Verification failed: {:?}", opening_result.err());
+                return Ok(false)
+            }
+
+            end_timer!(verifier_time);
+            opening_result
         } else {
-            Self::verify_no_lcs(index_vk, proof, public_input, verifier_state, commitments, fs_rng, rng)
-        }?;
+            let result = Self::verify_lcs(
+                index_vk,
+                proof,
+                public_input,
+                verifier_state,
+                commitments,
+                fs_rng,
+                rng
+            );
 
-        end_timer!(verifier_time);
+            if result.is_err() {
+                end_timer!(verifier_time);
+                println!("AHP Verification failed: {:?}", result.err());
+                return Ok(false)
+            }
 
-        Ok(result)
+            end_timer!(verifier_time);
+            result
+        }
     }
 
-    fn verify_no_lcs<R: RngCore>(
-        index_vk:       &IndexVerifierKey<F, PC>,
-        proof:          &Proof<F, PC>,
-        public_input:   Vec<F>,
+    /// Verify that a proof for the constrain system defined by `C` asserts that
+    /// all constraints are satisfied. Checks only that the sumcheck equations
+    /// are satisfied.
+    pub fn verify_ahp<'a>(
         verifier_state: VerifierState<F>,
-        labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
-        mut fs_rng:     FiatShamirRng<D>,
-        rng:            &mut R,
-    ) -> Result<bool, Error<PC::Error>>
-    {
+        public_input: &[F],
+        proof: &Proof<F, PC>,
+        fs_rng: &mut FiatShamirRng<D>,
+    )  -> Result<(QuerySet<'a, F>, Evaluations<'a, F>), Error<PC::Error>> {
+        assert!(!MC::LC_OPT);
+
+        let ahp_verification_time = start_timer!(|| "Verify Sumcheck equations");
+
+        // Check sumchecks equations
         let (query_set, verifier_state) =
-            AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
+            AHPForR1CS::verifier_query_set(verifier_state, fs_rng);
 
         let mut evaluations = Evaluations::new();
         let mut evaluation_labels = Vec::new();
@@ -530,24 +581,38 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             evaluations.insert(((q.0).0, q.1), *eval);
         }
 
-        fs_rng.absorb(&proof.evaluations);
-        let opening_challenge: F = u128::rand(&mut fs_rng).into();
-        let opening_challenges = |pow| opening_challenge.pow(&[pow]);
-
-        let evaluations_are_correct = AHPForR1CS::verify_sumchecks(
+        AHPForR1CS::verify_sumchecks(
             &public_input,
             &evaluations,
             &verifier_state,
-        );
+        )?;
 
-        if evaluations_are_correct.is_err()
-        {
-            eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
-            return Ok(false)
-        }
+        end_timer!(ahp_verification_time);
 
-        let check_time = start_timer!("Check opening proof");
-        let evaluations_are_correct = PC::batch_check_individual_opening_challenges(
+        Ok((query_set, evaluations))
+    }
+
+    /// Verify that a proof for the constrain system defined by `C` asserts that
+    /// all constraints are satisfied. Checks only that the opening proof is
+    /// satisfied.
+    pub fn verify_opening<'a, R: RngCore>(
+        index_vk:       &IndexVerifierKey<F, PC>,
+        proof:          &Proof<F, PC>,
+        labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
+        query_set:      QuerySet<'a, F>,
+        evaluations:    Evaluations<'a, F>,
+        fs_rng:         &mut FiatShamirRng<D>,
+        rng:            &mut R,
+    ) -> Result<bool, Error<PC::Error>> {
+        assert!(!MC::LC_OPT);
+
+        let check_time = start_timer!(|| "Check opening proof");
+
+        fs_rng.absorb(&proof.evaluations);
+        let opening_challenge: F = u128::rand(fs_rng).into();
+        let opening_challenges = |pow| opening_challenge.pow(&[pow]);
+
+        let result = PC::batch_check_individual_opening_challenges(
             &index_vk.verifier_key,
             &labeled_comms,
             &query_set,
@@ -555,10 +620,11 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             &proof.pc_proof.proof,
             &opening_challenges,
             rng,
-        ).map_err(Error::from_pc_err)?;
+        ).map_err(Error::from_pc_err);
+
         end_timer!(check_time);
 
-        Ok(evaluations_are_correct)
+        result
     }
 
     fn verify_lcs<R: RngCore>(
@@ -570,6 +636,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         mut fs_rng:     FiatShamirRng<D>,
         rng:         &mut R,
     ) -> Result<bool, Error<PC::Error>> {
+        let check_time = start_timer!(|| "Check sumchecks and opening proofs");
+
         let (query_set, verifier_state) =
             AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
 
@@ -597,7 +665,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             &verifier_state,
         )?;
 
-        let check_time = start_timer!("Check opening proof");
         let evaluations_are_correct = PC::check_combinations(
             &index_vk.verifier_key,
             &lc_s,
@@ -609,11 +676,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             rng,
         ).map_err(Error::from_pc_err);
         end_timer!(check_time);
-
-        if evaluations_are_correct.is_err() {
-            eprintln!("Evaluations are not correct: {:?}", evaluations_are_correct.err().unwrap());
-            return Ok(false)
-        }
 
         evaluations_are_correct
     }
