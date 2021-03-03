@@ -2,7 +2,7 @@ use crate::ahp::indexer::*;
 use crate::ahp::prover::ProverMsg;
 use crate::Vec;
 use algebra::PrimeField;
-use poly_commit::{BatchLCProof, PolynomialCommitment};
+use poly_commit::{BatchLCProof, PolynomialCommitment, LabeledRandomness};
 
 /* ************************************************************************* */
 /* ************************************************************************* */
@@ -69,7 +69,7 @@ pub struct IndexProverKey<
     /// The index verifier key.
     pub index_vk: IndexVerifierKey<F, PC>,
     /// The randomness for the index polynomial commitments.
-    pub index_comm_rands: Vec<PC::Randomness>,
+    pub index_comm_rands: Vec<LabeledRandomness<PC::Randomness>>,
     /// The index itself.
     pub index: Index<F>,
     /// The committer key for this index, trimmed from the universal SRS.
@@ -125,7 +125,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
 
     /// Prints information about the size of the proof.
     pub fn print_size_info(&self) {
-        use poly_commit::{PCCommitment, PCProof};
+        use poly_commit::{PCCommitment, BatchPCProof};
 
         let size_of_fe_in_bytes = F::zero().into_repr().as_ref().len() * 8;
         let mut num_comms_without_degree_bounds = 0;
@@ -143,11 +143,13 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
             }
         }
 
-        let proofs: Vec<PC::Proof> = self.pc_proof.proof.clone().into();
-        let num_proofs = proofs.len();
-        for proof in &proofs {
-            size_bytes_proofs += proof.size_in_bytes();
-        }
+        // let proofs: Vec<PC::Proof> = self.pc_proof.proof.clone().into();
+        // let num_proofs = proofs.len();
+        // for proof in &proofs {
+        //     size_bytes_proofs += proof.size_in_bytes();
+        // }
+
+        size_bytes_proofs += self.pc_proof.proof.size_in_bytes();
 
         let num_evals = self.evaluations.len();
         let evals_size_in_bytes = num_evals * size_of_fe_in_bytes;
@@ -171,7 +173,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
              Size (in bytes) of commitments without degree bounds: {}\n\
              Number of commitments with degree bounds: {}\n\
              Size (in bytes) of commitments with degree bounds: {}\n\n\
-             Number of evaluation proofs: {}\n\
              Size (in bytes) of evaluation proofs: {}\n\n\
              Number of evaluations: {}\n\
              Size (in bytes) of evaluations: {}\n\n\
@@ -182,7 +183,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
             size_bytes_comms_without_degree_bounds,
             num_comms_with_degree_bounds,
             size_bytes_comms_with_degree_bounds,
-            num_proofs,
             size_bytes_proofs,
             num_evals,
             evals_size_in_bytes,

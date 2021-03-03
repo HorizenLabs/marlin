@@ -25,7 +25,7 @@ bench-utils = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = 
 r1cs-core = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 r1cs-std = { git = "https://github.com/HorizenOfficial/ginger-lib", branch = "algebra_ocl"}
 
-poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "dev" }
+poly-commit = { git = "https://github.com/HorizenLabs/poly-commit", branch = "labeled_rands" }
 
 rand = "0.7"
 rand_core = { version = "0.5" }
@@ -83,3 +83,15 @@ lto = "thin"
 incremental = true
 debug-assertions = true
 debug = true
+
+# Uncomment these lines for local development paths
+
+# [patch.'https://github.com/HorizenOfficial/ginger-lib']
+# algebra = { path = '../ginger-lib/algebra' }
+# algebra-utils = { path = '../ginger-lib/algebra-utils' }
+# bench-utils = { path = '../ginger-lib/bench-utils' }
+# r1cs-core = { path = '../ginger-lib/r1cs/core' }
+# r1cs-std = { path = '../ginger-lib/r1cs/gadgets/std' }
+
+# [patch.'https://github.com/HorizenLabs/poly-commit']
+# poly-commit = { path = '../poly-commit' }

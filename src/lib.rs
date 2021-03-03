@@ -23,7 +23,7 @@ use algebra::ToBytes;
 use algebra::UniformRand;
 use std::marker::PhantomData;
 use digest::Digest;
-use poly_commit::{Evaluations, LabeledPolynomial, BatchLCProof, QuerySet};
+use poly_commit::{Evaluations, LabeledPolynomial, LabeledRandomness, BatchLCProof, QuerySet};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
@@ -175,6 +175,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         c: C,
         zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>> {
+        // let mut none_zk_rng: Option<R> = None;
         assert!(zk_rng.is_some() && MC::ZK || zk_rng.is_none() && !MC::ZK);
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
@@ -274,7 +275,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             .collect();
 
         // Gather commitment randomness together.
-        let comm_rands: Vec<PC::Randomness> = index_pk
+        let comm_rands: Vec<LabeledRandomness<PC::Randomness>> = index_pk
             .index_comm_rands
             .clone()
             .into_iter()
@@ -324,7 +325,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         polynomials:     Vec<&LabeledPolynomial<F>>,
         commitments:     Vec<Vec<PC::Commitment>>,
         labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
-        comm_rands:      Vec<PC::Randomness>,
+        comm_rands:      Vec<LabeledRandomness<PC::Randomness>>,
         prover_messages: Vec<ProverMsg<F>>,
         mut fs_rng:      FiatShamirRng<D>,
         zk_rng: &mut Option<R>,
@@ -335,6 +336,15 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
 
         let eval_time = start_timer!(|| "Evaluating polynomials over query set");
+
+        let mut polynomials = polynomials;
+        polynomials.sort_by(|a, b| a.label().cmp(&b.label()));
+
+        let mut labeled_comms = labeled_comms;
+        labeled_comms.sort_by(|a, b| a.label().cmp(&b.label()));
+
+        let mut comm_rands = comm_rands;
+        comm_rands.sort_by(|a, b| a.label().cmp(&b.label()));
 
         let mut evaluations = AHPForR1CS::<F>::evaluate_query_set_to_vec(
             polynomials.clone(), &query_set
@@ -370,7 +380,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         polynomials:     Vec<&LabeledPolynomial<F>>,
         commitments:     Vec<Vec<PC::Commitment>>,
         labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
-        comm_rands:      Vec<PC::Randomness>,
+        comm_rands:      Vec<LabeledRandomness<PC::Randomness>>,
         prover_messages: Vec<ProverMsg<F>>,
         mut fs_rng:      FiatShamirRng<D>,
         zk_rng: &mut Option<R>,
@@ -611,6 +621,9 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         fs_rng.absorb(&proof.evaluations);
         let opening_challenge: F = u128::rand(fs_rng).into();
         let opening_challenges = |pow| opening_challenge.pow(&[pow]);
+
+        let mut labeled_comms = labeled_comms;
+        labeled_comms.sort_by(|a, b| a.label().cmp(&b.label()));
 
         let result = PC::batch_check_individual_opening_challenges(
             &index_vk.verifier_key,
