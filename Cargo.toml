@@ -86,12 +86,12 @@ debug = true
 
 # Uncomment these lines for local development paths
 
-# [patch.'https://github.com/HorizenOfficial/ginger-lib']
-# algebra = { path = '../ginger-lib/algebra' }
-# algebra-utils = { path = '../ginger-lib/algebra-utils' }
-# bench-utils = { path = '../ginger-lib/bench-utils' }
-# r1cs-core = { path = '../ginger-lib/r1cs/core' }
-# r1cs-std = { path = '../ginger-lib/r1cs/gadgets/std' }
-
-# [patch.'https://github.com/HorizenLabs/poly-commit']
-# poly-commit = { path = '../poly-commit' }
+#[patch.'https://github.com/HorizenOfficial/ginger-lib']
+#algebra = { path = '../ginger-lib/algebra' }
+#algebra-utils = { path = '../ginger-lib/algebra-utils' }
+#bench-utils = { path = '../ginger-lib/bench-utils' }
+#r1cs-core = { path = '../ginger-lib/r1cs/core' }
+#r1cs-std = { path = '../ginger-lib/r1cs/gadgets/std' }
+#
+#[patch.'https://github.com/HorizenLabs/poly-commit']
+#poly-commit = { path = '../poly-commit' }
