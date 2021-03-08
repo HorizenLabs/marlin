@@ -337,15 +337,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let eval_time = start_timer!(|| "Evaluating polynomials over query set");
 
-        let mut polynomials = polynomials;
-        polynomials.sort_by(|a, b| a.label().cmp(&b.label()));
-
-        let mut labeled_comms = labeled_comms;
-        labeled_comms.sort_by(|a, b| a.label().cmp(&b.label()));
-
-        let mut comm_rands = comm_rands;
-        comm_rands.sort_by(|a, b| a.label().cmp(&b.label()));
-
         let mut evaluations = AHPForR1CS::<F>::evaluate_query_set_to_vec(
             polynomials.clone(), &query_set
         );
@@ -621,9 +612,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         fs_rng.absorb(&proof.evaluations);
         let opening_challenge: F = u128::rand(fs_rng).into();
         let opening_challenges = |pow| opening_challenge.pow(&[pow]);
-
-        let mut labeled_comms = labeled_comms;
-        labeled_comms.sort_by(|a, b| a.label().cmp(&b.label()));
 
         let result = PC::batch_check_individual_opening_challenges(
             &index_vk.verifier_key,
