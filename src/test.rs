@@ -146,20 +146,21 @@ mod marlin {
                 num_variables,
             };
 
-            let (index_pk, index_vk) = Marlin::<F, PC, D, MC>::index(&universal_srs, circ.clone()).unwrap();
+            let (index_pk, pc_pk, index_vk, pc_vk) = Marlin::<F, PC, D, MC>::index(&universal_srs, circ.clone()).unwrap();
             println!("Called index");
 
             let proof = Marlin::<F, PC, D, MC>::prove(
                 &index_pk,
+                &pc_pk,
                 circ,
                 &mut if MC::ZK { Some(thread_rng()) } else { None }
             ).unwrap();
             println!("Called prover");
 
-            assert!(Marlin::<F, PC, D, MC>::verify(&index_vk, &[c, d], &proof, rng).unwrap());
+            assert!(Marlin::<F, PC, D, MC>::verify(&index_vk, &pc_vk,&[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!Marlin::<F, PC, D, MC>::verify(&index_vk, &[a, a], &proof, rng).unwrap());
+            assert!(!Marlin::<F, PC, D, MC>::verify(&index_vk, &pc_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 

@@ -16,19 +16,17 @@ pub type UniversalSRS<F, PC> = <PC as PolynomialCommitment<F>>::UniversalParams;
 /* ************************************************************************* */
 
 /// Verification key for a specific index (i.e., R1CS matrices).
-pub struct IndexVerifierKey<F: PrimeField, PC: PolynomialCommitment<F>>
+pub struct VerifierKey<F: PrimeField, PC: PolynomialCommitment<F>>
 {
     /// Stores information about the size of the index, as well as its field of
     /// definition.
     pub index_info: IndexInfo<F>,
     /// Commitments to the indexed polynomials.
     pub index_comms: Vec<PC::Commitment>,
-    /// The verifier key for this index, trimmed from the universal SRS.
-    pub verifier_key: PC::VerifierKey,
 }
 
 impl<F: PrimeField, PC: PolynomialCommitment<F>> algebra::ToBytes
-    for IndexVerifierKey<F, PC>
+    for VerifierKey<F, PC>
 {
     fn write<W: std::io::Write>(&self, mut w: W) -> std::io::Result<()> {
         self.index_info.write(&mut w)?;
@@ -37,19 +35,18 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> algebra::ToBytes
 }
 
 impl<F: PrimeField, PC: PolynomialCommitment<F>> Clone
-    for IndexVerifierKey<F, PC>
+    for VerifierKey<F, PC>
 {
     fn clone(&self) -> Self {
         Self {
             index_comms: self.index_comms.clone(),
             index_info: self.index_info.clone(),
-            verifier_key: self.verifier_key.clone(),
         }
     }
 }
 
 impl<F: PrimeField, PC: PolynomialCommitment<F>>
-    IndexVerifierKey<F, PC>
+    VerifierKey<F, PC>
 {
     /// Iterate over the commitments to indexed polynomials in `self`.
     pub fn iter(&self) -> impl Iterator<Item = &PC::Commitment> {
@@ -62,22 +59,20 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>>
 /* ************************************************************************* */
 
 /// Proving key for a specific index (i.e., R1CS matrices).
-pub struct IndexProverKey<
+pub struct ProverKey<
     F: PrimeField,
     PC: PolynomialCommitment<F>,
 > {
     /// The index verifier key.
-    pub index_vk: IndexVerifierKey<F, PC>,
+    pub index_vk: VerifierKey<F, PC>,
     /// The randomness for the index polynomial commitments.
     pub index_comm_rands: Vec<LabeledRandomness<PC::Randomness>>,
     /// The index itself.
     pub index: Index<F>,
-    /// The committer key for this index, trimmed from the universal SRS.
-    pub committer_key: PC::CommitterKey,
 }
 
 impl<F: PrimeField, PC: PolynomialCommitment<F>> Clone
-    for IndexProverKey<F, PC>
+    for ProverKey<F, PC>
 where
     PC::Commitment: Clone,
 {
@@ -86,7 +81,6 @@ where
             index_vk: self.index_vk.clone(),
             index_comm_rands: self.index_comm_rands.clone(),
             index: self.index.clone(),
-            committer_key: self.committer_key.clone(),
         }
     }
 }

@@ -116,7 +116,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     pub fn index<C: ConstraintSynthesizer<F>>(
         srs: &UniversalSRS<F, PC>,
         c: C,
-    ) -> Result<(IndexProverKey<F, PC>, IndexVerifierKey<F, PC>), Error<PC::Error>> {
+    ) -> Result<(ProverKey<F, PC>, PC::CommitterKey, VerifierKey<F, PC>, PC::VerifierKey), Error<PC::Error>> {
         let index_time = start_timer!(|| "Marlin::Index");
 
         // TODO: Add check that c is in the correct mode.
@@ -145,22 +145,20 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             .into_iter()
             .map(|c| c.commitment().clone())
             .collect();
-        let index_vk = IndexVerifierKey {
+        let index_vk = VerifierKey {
             index_info: index.index_info,
             index_comms,
-            verifier_key,
         };
 
-        let index_pk = IndexProverKey {
+        let index_pk = ProverKey {
             index,
             index_comm_rands,
             index_vk: index_vk.clone(),
-            committer_key,
         };
 
         end_timer!(index_time);
 
-        Ok((index_pk, index_vk))
+        Ok((index_pk, committer_key, index_vk, verifier_key))
     }
 
     // Cast a generic type to its dynamic type
@@ -171,7 +169,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
     /// Create a zkSNARK asserting that the constraint system is satisfied.
     pub fn prove<C: ConstraintSynthesizer<F>, R: RngCore>(
-        index_pk: &IndexProverKey<F, PC>,
+        index_pk: &ProverKey<F, PC>,
+        pc_pk:    &PC::CommitterKey,
         c: C,
         zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>> {
@@ -194,7 +193,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let first_round_comm_time = start_timer!(|| "Committing to first round polys");
         let (first_comms, first_comm_rands) = PC::commit(
-            &index_pk.committer_key,
+            pc_pk,
             prover_first_oracles.iter(),
             Self::get_rng(zk_rng),
         )
@@ -215,7 +214,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let second_round_comm_time = start_timer!(|| "Committing to second round polys");
         let (second_comms, second_comm_rands) = PC::commit(
-            &index_pk.committer_key,
+            pc_pk,
             prover_second_oracles.iter(),
             Self::get_rng(zk_rng),
         )
@@ -235,7 +234,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let third_round_comm_time = start_timer!(|| "Committing to third round polys");
         let (third_comms, third_comm_rands) = PC::commit(
-            &index_pk.committer_key,
+            pc_pk,
             prover_third_oracles.iter(),
             Self::get_rng(zk_rng),
         )
@@ -289,7 +288,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let proof = if MC::LC_OPT {
             Self::prove_lcs(
-                index_pk,
+                pc_pk,
                 public_input,
                 verifier_state,
                 polynomials,
@@ -302,7 +301,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             )
         } else {
             Self::prove_no_lcs(
-                index_pk,
+                pc_pk,
                 verifier_state,
                 polynomials,
                 commitments,
@@ -320,7 +319,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     }
 
     fn prove_no_lcs<R: RngCore>(
-        index_pk:        &IndexProverKey<F, PC>,
+        pc_pk:           &PC::CommitterKey,
         verifier_state:  VerifierState<F>,
         polynomials:     Vec<&LabeledPolynomial<F>>,
         commitments:     Vec<Vec<PC::Commitment>>,
@@ -351,7 +350,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let opening_time = start_timer!(|| "Compute opening proof");
         let proof = PC::batch_open_individual_opening_challenges(
-            &index_pk.committer_key,
+            pc_pk,
             polynomials.clone(),
             &labeled_comms,
             &query_set,
@@ -365,7 +364,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     }
 
     fn prove_lcs<R: RngCore>(
-        index_pk:        &IndexProverKey<F, PC>,
+        pc_pk:           &PC::CommitterKey,
         public_input:    Vec<F>,
         verifier_state:  VerifierState<F>,
         polynomials:     Vec<&LabeledPolynomial<F>>,
@@ -407,7 +406,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let opening_time = start_timer!(|| "Compute opening proof");
         let pc_proof = PC::open_combinations(
-            &index_pk.committer_key,
+            pc_pk,
             &lc_s,
             polynomials,
             &labeled_comms,
@@ -424,7 +423,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     /// Verify that a proof for the constrain system defined by `C` asserts that
     /// all constraints are satisfied.
     pub fn verify<R: RngCore>(
-        index_vk: &IndexVerifierKey<F, PC>,
+        index_vk: &VerifierKey<F, PC>,
+        pc_vk:    &PC::VerifierKey,
         public_input: &[F],
         proof: &Proof<F, PC>,
         rng: &mut R,
@@ -449,7 +449,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
             // Check opening proof
             let opening_result = Self::verify_opening(
-                index_vk,
+                pc_vk,
                 proof,
                 commitments,
                 query_set,
@@ -469,6 +469,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         } else {
             let result = Self::verify_lcs(
                 index_vk,
+                pc_vk,
                 proof,
                 public_input,
                 rng
@@ -489,7 +490,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     /// all constraints are satisfied. Checks only that the sumcheck equations
     /// are satisfied.
     pub fn verify_ahp<'a>(
-        index_vk:       &IndexVerifierKey<F, PC>,
+        index_vk:       &VerifierKey<F, PC>,
         public_input:   &[F],
         proof:          &Proof<F, PC>,
     )  -> Result<(
@@ -597,7 +598,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     /// all constraints are satisfied. Checks only that the opening proof is
     /// satisfied.
     pub fn verify_opening<'a, R: RngCore>(
-        index_vk:       &IndexVerifierKey<F, PC>,
+        pc_vk:          &PC::VerifierKey,
         proof:          &Proof<F, PC>,
         labeled_comms:  Vec<LabeledCommitment<PC::Commitment>>,
         query_set:      QuerySet<'a, F>,
@@ -614,7 +615,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let opening_challenges = |pow| opening_challenge.pow(&[pow]);
 
         let result = PC::batch_check_individual_opening_challenges(
-            &index_vk.verifier_key,
+            pc_vk,
             &labeled_comms,
             &query_set,
             &evaluations,
@@ -629,7 +630,8 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     }
 
     fn verify_lcs<R: RngCore>(
-        index_vk:       &IndexVerifierKey<F, PC>,
+        index_vk:       &VerifierKey<F, PC>,
+        pc_vk:          &PC::VerifierKey,
         proof:          &Proof<F, PC>,
         public_input:   &[F],
         rng:         &mut R,
@@ -729,7 +731,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         )?;
 
         let evaluations_are_correct = PC::check_combinations(
-            &index_vk.verifier_key,
+            pc_vk,
             &lc_s,
             &commitments,
             &query_set,
