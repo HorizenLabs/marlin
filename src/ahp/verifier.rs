@@ -6,7 +6,7 @@ use rand_core::RngCore;
 
 use algebra::PrimeField;
 use algebra_utils::{EvaluationDomain, get_best_evaluation_domain, sample_element_outside_domain};
-use poly_commit::{QuerySet, LabeledPolynomial};
+use poly_commit::QuerySet;
 
 /// State of the AHP verifier
 pub struct VerifierState<F: PrimeField> {
@@ -186,27 +186,5 @@ impl<F: PrimeField> AHPForR1CS<F> {
         query_set.insert(("c_val".into(), ("gamma".into(), gamma)));
 
         (query_set, state)
-    }
-
-    /// Evaluate the given polynomials at `query_set` and returns a Vec<((poly_label, point_label), eval)>)
-    pub fn evaluate_query_set_to_vec<'a>(
-        polys: impl IntoIterator<Item = &'a LabeledPolynomial<F>>,
-        query_set: &QuerySet<'a, F>,
-    ) -> Vec<((String, String), F)>
-    {
-        use std::{
-            collections::BTreeMap,
-            iter::FromIterator,
-        };
-        let polys = BTreeMap::from_iter(polys.into_iter().map(|p| (p.label(), p)));
-        let mut v = Vec::new();
-        for (label, (point_label, point)) in query_set {
-            let poly = polys
-                .get(label)
-                .expect("polynomial in evaluated lc is not found");
-            let eval = poly.evaluate(*point);
-            v.push(((label.clone(), point_label.clone()), eval));
-        }
-        v
     }
 }

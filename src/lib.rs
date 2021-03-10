@@ -23,7 +23,7 @@ use algebra::ToBytes;
 use algebra::UniformRand;
 use std::marker::PhantomData;
 use digest::Digest;
-use poly_commit::{Evaluations, LabeledPolynomial, LabeledRandomness, BatchLCProof, QuerySet};
+use poly_commit::{Evaluations, LabeledPolynomial, LabeledRandomness, BatchLCProof, QuerySet, evaluate_query_set_to_vec};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
@@ -315,7 +315,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         }?;
         end_timer!(prover_time);
 
-        //proof.print_size_info();
+        proof.print_size_info();
         Ok(proof)
     }
 
@@ -337,7 +337,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
 
         let eval_time = start_timer!(|| "Evaluating polynomials over query set");
 
-        let mut evaluations = AHPForR1CS::<F>::evaluate_query_set_to_vec(
+        let mut evaluations = evaluate_query_set_to_vec(
             polynomials.clone(), &query_set
         );
 
