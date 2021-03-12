@@ -65,9 +65,7 @@ impl<ConstraintF: Field> ConstraintSynthesizer<ConstraintF> for Circuit<Constrai
 
 mod marlin {
     use super::*;
-    use crate::{
-        Marlin, MarlinConfig,
-    };
+    use crate::Marlin;
 
     use algebra::{
         fields::tweedle::fq::Fq,
@@ -81,55 +79,21 @@ mod marlin {
     use digest::Digest;
 
     type MultiPC = InnerProductArgPC<Affine, Blake2s>;
-    
-    #[derive(Clone)]
-    /// For standard, circuit friendly, usage
-    struct MarlinNoLCNoZk;
-
-    impl MarlinConfig for MarlinNoLCNoZk {
-        const LC_OPT: bool = false;
-        const ZK: bool = false;
-    }
-
-    #[derive(Clone)]
-    /// For standard usage with Poly LCs (not circuit friendly)
-    struct MarlinLCNoZk;
-
-    impl MarlinConfig for MarlinLCNoZk {
-        const LC_OPT: bool = true;
-        const ZK: bool = false;
-    }
-
-    #[derive(Clone)]
-    struct MarlinNoLCZk;
-
-    impl MarlinConfig for MarlinNoLCZk {
-        const LC_OPT: bool = false;
-        const ZK: bool = true;
-    }
-
-    #[derive(Clone)]
-    struct MarlinLCZk;
-
-    impl MarlinConfig for MarlinLCZk {
-        const LC_OPT: bool = true;
-        const ZK: bool = true;
-    }
 
     fn test_circuit<
         F:  PrimeField,
         PC: PolynomialCommitment<F>,
         D:  Digest,
-        MC: MarlinConfig,
     >(
         num_samples: usize,
         num_constraints: usize,
         num_variables: usize,
+        zk: bool,
     )
     {
         let rng = &mut thread_rng();
 
-        let universal_srs = Marlin::<F, PC, D, MC>::universal_setup(100, 25, 100, rng).unwrap();
+        let universal_srs = Marlin::<F, PC, D>::universal_setup(100, 25, 100, zk, rng).unwrap();
 
         for _ in 0..num_samples {
             let a = F::rand(rng);
@@ -146,21 +110,22 @@ mod marlin {
                 num_variables,
             };
 
-            let (index_pk, pc_pk, index_vk, pc_vk) = Marlin::<F, PC, D, MC>::index(&universal_srs, circ.clone()).unwrap();
+            let (index_pk, pc_pk, index_vk, pc_vk) = Marlin::<F, PC, D>::index(&universal_srs, circ.clone(), zk).unwrap();
             println!("Called index");
 
-            let proof = Marlin::<F, PC, D, MC>::prove(
+            let proof = Marlin::<F, PC, D>::prove(
                 &index_pk,
                 &pc_pk,
                 circ,
-                &mut if MC::ZK { Some(thread_rng()) } else { None }
+                zk,
+                &mut if zk { Some(thread_rng()) } else { None }
             ).unwrap();
             println!("Called prover");
 
-            assert!(Marlin::<F, PC, D, MC>::verify(&index_vk, &pc_vk,&[c, d], &proof, rng).unwrap());
+            assert!(Marlin::<F, PC, D>::verify(&index_vk, &pc_vk,&[c, d], &proof, rng).unwrap());
             println!("Called verifier");
             println!("\nShould not verify (i.e. verifier messages should print below):");
-            assert!(!Marlin::<F, PC, D, MC>::verify(&index_vk, &pc_vk, &[a, a], &proof, rng).unwrap());
+            assert!(!Marlin::<F, PC, D>::verify(&index_vk, &pc_vk, &[a, a], &proof, rng).unwrap());
         }
     }
 
@@ -169,17 +134,11 @@ mod marlin {
         let num_constraints = 100;
         let num_variables = 25;
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, No ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, false);
+        println!("Marlin No ZK passed");
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 
     #[test]
@@ -187,17 +146,11 @@ mod marlin {
         let num_constraints = 26;
         let num_variables = 25;
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, No ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, false);
+        println!("Marlin No ZK passed");
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 
     #[test]
@@ -205,17 +158,11 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 100;
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, No ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, false);
+        println!("Marlin No ZK passed");
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 
     #[test]
@@ -223,17 +170,11 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 26;
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, No ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, false);
+        println!("Marlin No ZK passed");
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 
     #[test]
@@ -241,17 +182,11 @@ mod marlin {
         let num_constraints = 25;
         let num_variables = 25;
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, No ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, false);
+        println!("Marlin No ZK passed");
 
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 
     #[test]
@@ -261,16 +196,10 @@ mod marlin {
         let num_variables = 1 << 4;
 
         //TODO: Fix non passing tests
-        //test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCNoZk>(25, num_constraints, num_variables);
+        //test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables);
         //println!("Marlin No LC, No ZK passed");
 
-        //test_circuit::<Fq, MultiPC, Blake2s, MarlinLCNoZk>(25, num_constraints, num_variables);
-        //println!("Marlin LC, No ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinNoLCZk>(25, num_constraints, num_variables);
-        println!("Marlin No LC, ZK passed");
-
-        test_circuit::<Fq, MultiPC, Blake2s, MarlinLCZk>(25, num_constraints, num_variables);
-        println!("Marlin LC, ZK passed");
+        test_circuit::<Fq, MultiPC, Blake2s>(25, num_constraints, num_variables, true);
+        println!("Marlin ZK passed");
     }
 }

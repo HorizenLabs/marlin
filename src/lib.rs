@@ -23,7 +23,7 @@ use algebra::ToBytes;
 use algebra::UniformRand;
 use std::marker::PhantomData;
 use digest::Digest;
-use poly_commit::{Evaluations, LabeledPolynomial, LabeledRandomness, BatchLCProof, QuerySet, evaluate_query_set_to_vec};
+use poly_commit::{Evaluations, LabeledRandomness, BatchLCProof, QuerySet, evaluate_query_set_to_vec};
 use poly_commit::{LabeledCommitment, PCUniversalParams, PolynomialCommitment};
 use r1cs_core::ConstraintSynthesizer;
 use rand_core::RngCore;
@@ -48,39 +48,19 @@ pub use data_structures::*;
 /// Implements an Algebraic Holographic Proof (AHP) for the R1CS indexed relation.
 pub mod ahp;
 pub use ahp::AHPForR1CS;
-use ahp::EvaluationsProvider;
 use algebra_utils::get_best_evaluation_domain;
-use crate::ahp::verifier::VerifierState;
-use crate::ahp::prover::ProverMsg;
 
 #[cfg(test)]
 mod test;
 
-/// Configuration parameters for the Marlin proving system, modifying the
-/// internal behaviour of both prover and verifier.
-pub trait MarlinConfig: Clone + Send + Sync {
-    /// If set, an optimization exploiting LC of polynomials will be enabled.
-    /// This optimization allows to include less opening values in the proof,
-    /// thus reducing its size, but comes with additional variable base scalar
-    /// multiplications to be performed by the verifier in order to verify the
-    /// sumcheck equations, that are expensive to circuitize.
-    /// If unset, all the opening values of all the polynomials are included in
-    /// the proof (thus increasing its size), but doesn't come with any additional
-    /// operation to be performed by the verifier, apart from the lincheck of course.
-    const LC_OPT: bool;
-    /// Enable or disable zero-knowledge
-    const ZK: bool = true;
-}
-
 /// The compiled argument system.
-pub struct Marlin<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig>(
+pub struct Marlin<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest>(
     #[doc(hidden)] PhantomData<F>,
     #[doc(hidden)] PhantomData<PC>,
     #[doc(hidden)] PhantomData<D>,
-    #[doc(hidden)] PhantomData<MC>,
 );
 
-impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Marlin<F, PC, D, MC> {
+impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest> Marlin<F, PC, D> {
     /// The personalization string for this protocol. Used to personalize the
     /// Fiat-Shamir rng.
     pub const PROTOCOL_NAME: &'static [u8] = b"MARLIN-2019";
@@ -91,13 +71,14 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         num_constraints: usize,
         num_variables: usize,
         num_non_zero: usize,
+        zk:  bool,
         rng: &mut R,
     ) -> Result<UniversalSRS<F, PC>, Error<PC::Error>> {
         let max_degree = AHPForR1CS::<F>::max_degree(
             num_constraints,
             num_variables,
             num_non_zero,
-            MC::ZK
+            zk
         )?;
         let setup_time = start_timer!(|| {
             format!(
@@ -116,22 +97,23 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     pub fn index<C: ConstraintSynthesizer<F>>(
         srs: &UniversalSRS<F, PC>,
         c: C,
+        zk: bool,
     ) -> Result<(ProverKey<F, PC>, PC::CommitterKey, VerifierKey<F, PC>, PC::VerifierKey), Error<PC::Error>> {
         let index_time = start_timer!(|| "Marlin::Index");
 
         // TODO: Add check that c is in the correct mode.
         let index = AHPForR1CS::index(c)?;
-        if srs.max_degree() < index.max_degree(MC::ZK) {
+        if srs.max_degree() < index.max_degree(zk) {
             Err(Error::IndexTooLarge)?;
         }
 
         let coeff_support = AHPForR1CS::get_degree_bounds(&index.index_info);
         // Marlin only needs degree 2 random polynomials
-        let supported_hiding_bound = if MC::ZK { 1 } else { 0 };
+        let supported_hiding_bound = if zk { 1 } else { 0 };
 
         let (committer_key, verifier_key) =
             PC::trim(srs,
-                     index.max_degree(MC::ZK),
+                     index.max_degree(zk),
                      supported_hiding_bound,
                      Some(&coeff_support)
             ).map_err(Error::from_pc_err)?;
@@ -172,14 +154,15 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         index_pk: &ProverKey<F, PC>,
         pc_pk:    &PC::CommitterKey,
         c: C,
+        zk: bool,
         zk_rng: &mut Option<R>,
     ) -> Result<Proof<F, PC>, Error<PC::Error>> {
-        // let mut none_zk_rng: Option<R> = None;
-        assert!(zk_rng.is_some() && MC::ZK || zk_rng.is_none() && !MC::ZK);
+
+        assert!(zk_rng.is_some() && zk || zk_rng.is_none() && !zk);
         let prover_time = start_timer!(|| "Marlin::Prover");
         // Add check that c is in the correct mode.
 
-        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c, MC::ZK)?;
+        let prover_init_state = AHPForR1CS::prover_init(&index_pk.index, c, zk)?;
         let public_input = prover_init_state.public_input();
         let mut fs_rng = FiatShamirRng::<D>::from_seed(
             &to_bytes![&Self::PROTOCOL_NAME, &index_pk.index_vk, &public_input].unwrap(),
@@ -286,50 +269,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         // Gather prover messages together.
         let prover_messages = vec![prover_first_msg, prover_second_msg, prover_third_msg];
 
-        let proof = if MC::LC_OPT {
-            Self::prove_lcs(
-                pc_pk,
-                public_input,
-                verifier_state,
-                polynomials,
-                commitments,
-                labeled_comms,
-                comm_rands,
-                prover_messages,
-                fs_rng,
-                zk_rng
-            )
-        } else {
-            Self::prove_no_lcs(
-                pc_pk,
-                verifier_state,
-                polynomials,
-                commitments,
-                labeled_comms,
-                comm_rands,
-                prover_messages,
-                fs_rng,
-                zk_rng
-            )
-        }?;
-        end_timer!(prover_time);
-
-        proof.print_size_info();
-        Ok(proof)
-    }
-
-    fn prove_no_lcs<R: RngCore>(
-        pc_pk:           &PC::CommitterKey,
-        verifier_state:  VerifierState<F>,
-        polynomials:     Vec<&LabeledPolynomial<F>>,
-        commitments:     Vec<Vec<PC::Commitment>>,
-        labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
-        comm_rands:      Vec<LabeledRandomness<PC::Randomness>>,
-        prover_messages: Vec<ProverMsg<F>>,
-        mut fs_rng:      FiatShamirRng<D>,
-        zk_rng: &mut Option<R>,
-    ) -> Result<Proof<F, PC>, Error<PC::Error>> {
-
         // Compute the AHP verifier's query set.
         let (query_set, _) =
             AHPForR1CS::verifier_query_set(verifier_state, &mut fs_rng);
@@ -349,7 +288,7 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         let opening_challenges = |pow| opening_challenge.pow(&[pow]);
 
         let opening_time = start_timer!(|| "Compute opening proof");
-        let proof = PC::batch_open_individual_opening_challenges(
+        let pc_proof = PC::batch_open_individual_opening_challenges(
             pc_pk,
             polynomials.clone(),
             &labeled_comms,
@@ -360,64 +299,17 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         ).map_err(Error::from_pc_err)?;
         end_timer!(opening_time);
 
-        Ok(Proof::new(commitments, evaluations, prover_messages, BatchLCProof::<F, PC>{ proof, evals: None }))
-    }
+        let proof = Proof::new(
+            commitments,
+            evaluations,
+            prover_messages,
+            BatchLCProof::<F, PC>{ proof: pc_proof, evals: None }
+        );
 
-    fn prove_lcs<R: RngCore>(
-        pc_pk:           &PC::CommitterKey,
-        public_input:    Vec<F>,
-        verifier_state:  VerifierState<F>,
-        polynomials:     Vec<&LabeledPolynomial<F>>,
-        commitments:     Vec<Vec<PC::Commitment>>,
-        labeled_comms:   Vec<LabeledCommitment<PC::Commitment>>,
-        comm_rands:      Vec<LabeledRandomness<PC::Randomness>>,
-        prover_messages: Vec<ProverMsg<F>>,
-        mut fs_rng:      FiatShamirRng<D>,
-        zk_rng: &mut Option<R>,
-    ) -> Result<Proof<F, PC>, Error<PC::Error>>
-    {
-        // Compute the AHP verifier's query set.
-        let (query_set, verifier_state) =
-            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
-        let lc_s = AHPForR1CS::construct_linear_combinations(
-            &public_input,
-            &polynomials,
-            &verifier_state,
-        )?;
+        end_timer!(prover_time);
 
-        let eval_time = start_timer!(|| "Evaluating linear combinations over query set");
-        let mut evaluations = Vec::new();
-        for (label, (point_label, point)) in &query_set {
-            let lc = lc_s
-                .iter()
-                .find(|lc| &lc.label == label)
-                .ok_or(ahp::Error::MissingEval(label.to_string()))?;
-            let eval = polynomials.get_lc_eval(&lc, *point)?;
-            if !AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&lc.label.as_ref()) {
-                evaluations.push(((label.to_string(), point_label.to_string()), eval));
-            }
-        }
-        evaluations.sort_by(|a, b| a.0.cmp(&b.0));
-        let evaluations = evaluations.into_iter().map(|x| x.1).collect::<Vec<F>>();
-        end_timer!(eval_time);
-
-        fs_rng.absorb(&evaluations);
-        let opening_challenge: F = u128::rand(&mut fs_rng).into();
-
-        let opening_time = start_timer!(|| "Compute opening proof");
-        let pc_proof = PC::open_combinations(
-            pc_pk,
-            &lc_s,
-            polynomials,
-            &labeled_comms,
-            &query_set,
-            opening_challenge,
-            &comm_rands,
-            Self::get_rng(zk_rng),
-        ).map_err(Error::from_pc_err)?;
-        end_timer!(opening_time);
-
-        Ok(Proof::new(commitments, evaluations, prover_messages, pc_proof))
+        proof.print_size_info();
+        Ok(proof)
     }
 
     /// Verify that a proof for the constrain system defined by `C` asserts that
@@ -431,59 +323,40 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
     ) -> Result<bool, Error<PC::Error>> {
         let verifier_time = start_timer!(|| "Marlin Verifier");
 
-        if !MC::LC_OPT {
-            // Check AHP (e.g. sumcheck equations)
-            let ahp_result = Self::verify_ahp(
-                index_vk,
-                &public_input,
-                proof,
-            );
+        // Check AHP (e.g. sumcheck equations)
+        let ahp_result = Self::verify_ahp(
+            index_vk,
+            &public_input,
+            proof,
+        );
 
-            if ahp_result.is_err() {
-                end_timer!(verifier_time);
-                println!("AHP Verification failed: {:?}", ahp_result.err());
-                return Ok(false)
-            }
-
-            let (query_set, evaluations, commitments, mut fs_rng) = ahp_result.unwrap();
-
-            // Check opening proof
-            let opening_result = Self::verify_opening(
-                pc_vk,
-                proof,
-                commitments,
-                query_set,
-                evaluations,
-                &mut fs_rng,
-                rng
-            );
-
-            if opening_result.is_err() {
-                end_timer!(verifier_time);
-                println!("Opening proof Verification failed: {:?}", opening_result.err());
-                return Ok(false)
-            }
-
+        if ahp_result.is_err() {
             end_timer!(verifier_time);
-            opening_result
-        } else {
-            let result = Self::verify_lcs(
-                index_vk,
-                pc_vk,
-                proof,
-                public_input,
-                rng
-            );
-
-            if result.is_err() {
-                end_timer!(verifier_time);
-                println!("AHP Verification failed: {:?}", result.err());
-                return Ok(false)
-            }
-
-            end_timer!(verifier_time);
-            result
+            println!("AHP Verification failed: {:?}", ahp_result.err());
+            return Ok(false)
         }
+
+        let (query_set, evaluations, commitments, mut fs_rng) = ahp_result.unwrap();
+
+        // Check opening proof
+        let opening_result = Self::verify_opening(
+            pc_vk,
+            proof,
+            commitments,
+            query_set,
+            evaluations,
+            &mut fs_rng,
+            rng
+        );
+
+        if opening_result.is_err() {
+            end_timer!(verifier_time);
+            println!("Opening proof Verification failed: {:?}", opening_result.err());
+            return Ok(false)
+        }
+
+        end_timer!(verifier_time);
+        opening_result
     }
 
     /// Verify that a proof for the constrain system defined by `C` asserts that
@@ -499,7 +372,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
             Vec<LabeledCommitment<PC::Commitment>>,
             FiatShamirRng<D>
         ), Error<PC::Error>> {
-        assert!(!MC::LC_OPT);
 
         let ahp_verification_time = start_timer!(|| "Verify Sumcheck equations");
 
@@ -606,7 +478,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         fs_rng:         &mut FiatShamirRng<D>,
         rng:            &mut R,
     ) -> Result<bool, Error<PC::Error>> {
-        assert!(!MC::LC_OPT);
 
         let check_time = start_timer!(|| "Check opening proof");
 
@@ -627,121 +498,5 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>, D: Digest, MC: MarlinConfig> Ma
         end_timer!(check_time);
 
         result
-    }
-
-    fn verify_lcs<R: RngCore>(
-        index_vk:       &VerifierKey<F, PC>,
-        pc_vk:          &PC::VerifierKey,
-        proof:          &Proof<F, PC>,
-        public_input:   &[F],
-        rng:         &mut R,
-    ) -> Result<bool, Error<PC::Error>> {
-        let check_time = start_timer!(|| "Check sumchecks and opening proofs");
-
-        let public_input = {
-            let domain_x = get_best_evaluation_domain::<F>(public_input.len() + 1).unwrap();
-
-            let mut unpadded_input = public_input.to_vec();
-            unpadded_input.resize(
-                std::cmp::max(public_input.len(), domain_x.size() - 1),
-                F::zero(),
-            );
-
-            unpadded_input
-        };
-
-        let mut fs_rng = FiatShamirRng::<D>::from_seed(
-            &to_bytes![&Self::PROTOCOL_NAME, &index_vk, &public_input].unwrap(),
-        );
-
-        // --------------------------------------------------------------------
-        // First round
-
-        let first_comms = &proof.commitments[0];
-        fs_rng.absorb(&to_bytes![first_comms, proof.prover_messages[0]].unwrap());
-
-        let (_, verifier_state) =
-            AHPForR1CS::verifier_first_round(index_vk.index_info, &mut fs_rng)?;
-        // --------------------------------------------------------------------
-
-        // --------------------------------------------------------------------
-        // Second round
-        let second_comms = &proof.commitments[1];
-        fs_rng.absorb(&to_bytes![second_comms, proof.prover_messages[1]].unwrap());
-
-        let (_, verifier_state) = AHPForR1CS::verifier_second_round(verifier_state, &mut fs_rng);
-        // --------------------------------------------------------------------
-
-        // --------------------------------------------------------------------
-        // Third round
-        let third_comms = &proof.commitments[2];
-        fs_rng.absorb(&to_bytes![third_comms, proof.prover_messages[2]].unwrap());
-
-        let verifier_state = AHPForR1CS::verifier_third_round(verifier_state, &mut fs_rng);
-        // --------------------------------------------------------------------
-
-        // Collect degree bounds for commitments. Indexed polynomials have *no*
-        // degree bounds because we know the committed index polynomial has the
-        // correct degree.
-        let index_info = index_vk.index_info;
-        let degree_bounds = vec![None; index_vk.index_comms.len()]
-            .into_iter()
-            .chain(AHPForR1CS::prover_first_round_degree_bounds(&index_info))
-            .chain(AHPForR1CS::prover_second_round_degree_bounds(&index_info))
-            .chain(AHPForR1CS::prover_third_round_degree_bounds(&index_info))
-            .collect::<Vec<_>>();
-
-        // Gather commitments in one vector.
-        let commitments: Vec<_> = index_vk
-            .iter()
-            .chain(first_comms)
-            .chain(second_comms)
-            .chain(third_comms)
-            .cloned()
-            .zip(AHPForR1CS::<F>::polynomial_labels())
-            .zip(degree_bounds)
-            .map(|((c, l), d)| LabeledCommitment::new(l, c, d))
-            .collect();
-
-        let (query_set, verifier_state) =
-            AHPForR1CS::verifier_lcs_query_set(verifier_state, &mut fs_rng);
-
-        fs_rng.absorb(&proof.evaluations);
-        let opening_challenge: F = u128::rand(&mut fs_rng).into();
-
-        let mut evaluations = Evaluations::new();
-        let mut evaluation_labels = Vec::new();
-        for (poly_label, (point_label, point)) in query_set.iter().cloned() {
-            if AHPForR1CS::<F>::LC_WITH_ZERO_EVAL.contains(&poly_label.as_ref()) {
-                evaluations.insert((poly_label, point), F::zero());
-            } else {
-                evaluation_labels.push(((poly_label, point_label), point));
-            }
-        }
-
-        evaluation_labels.sort_by(|a, b| a.0.cmp(&b.0));
-        for (q, eval) in evaluation_labels.into_iter().zip(&proof.evaluations) {
-            evaluations.insert(((q.0).0, q.1), *eval);
-        }
-
-        let lc_s = AHPForR1CS::construct_linear_combinations(
-            &public_input,
-            &evaluations,
-            &verifier_state,
-        )?;
-
-        let evaluations_are_correct = PC::check_combinations(
-            pc_vk,
-            &lc_s,
-            &commitments,
-            &query_set,
-            &evaluations,
-            &proof.pc_proof,
-            opening_challenge,
-            rng,
-        ).map_err(Error::from_pc_err);
-        end_timer!(check_time);
-
-        evaluations_are_correct
     }
 }
