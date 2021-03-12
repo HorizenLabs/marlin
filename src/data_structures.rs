@@ -137,12 +137,6 @@ impl<F: PrimeField, PC: PolynomialCommitment<F>> Proof<F, PC> {
             }
         }
 
-        // let proofs: Vec<PC::Proof> = self.pc_proof.proof.clone().into();
-        // let num_proofs = proofs.len();
-        // for proof in &proofs {
-        //     size_bytes_proofs += proof.size_in_bytes();
-        // }
-
         size_bytes_proofs += self.pc_proof.proof.size_in_bytes();
 
         let num_evals = self.evaluations.len();
