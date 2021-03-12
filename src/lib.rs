@@ -58,7 +58,7 @@ mod test;
 
 /// Configuration parameters for the Marlin proving system, modifying the
 /// internal behaviour of both prover and verifier.
-pub trait MarlinConfig: Clone {
+pub trait MarlinConfig: Clone + Send + Sync {
     /// If set, an optimization exploiting LC of polynomials will be enabled.
     /// This optimization allows to include less opening values in the proof,
     /// thus reducing its size, but comes with additional variable base scalar
