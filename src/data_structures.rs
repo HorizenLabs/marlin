@@ -90,6 +90,7 @@ where
 /* ************************************************************************* */
 
 /// A zkSNARK proof.
+#[derive(Clone)]
 pub struct Proof<F: PrimeField, PC: PolynomialCommitment<F>> {
     /// Commitments to the polynomials produced by the AHP prover.
     pub commitments: Vec<Vec<PC::Commitment>>,
